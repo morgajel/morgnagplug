@@ -1,0 +1,172 @@
+#!/usr/bin/perl 
+#
+# check_raid a nagios check plugin for monitoring databases
+#
+# Copyright (C) 2007 Jesse Morgan
+# BASED ON: check_oracle_generic, Copyright 2006 David Ligeret (david.ligeret at gmail.com)
+#
+# check_raid
+# This file is part of morgnagplug
+#
+# check_raid is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_raid is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+
+use strict;
+use Data::Dumper;
+use Nagios::Plugin;
+use DBI;
+my $np = Nagios::Plugin->new(  
+    usage => "Usage: %s [options]",
+
+    version => '1.0',
+    blurb   => 'ensure Raids are functional, errors out on the first bad raid',
+    url     => 'https://morgnagplug.svn.sourceforge.net/',
+    license => 'GPL 2',
+    timeout => 15, # default value explictly defined
+);
+$np->add_arg(
+        'spec' => "device|D=s",
+        'help' => "Device to check",
+   );
+$np->add_arg(# should this be reversed by default?
+        'spec' => "ignorestatus|s",
+        'help' => "Check all drives regardless of status (only checks active by default)",
+   );
+$np->add_arg(
+        'spec' => "excludedevice|x=s@",
+        'help' => "Exclude a device",
+   );
+$np->add_arg(
+        'spec' => "file|f=s",
+        'help' => "file to read (default is /proc/mdstat)",
+        'default'=>'/proc/mdstat',
+   );
+
+
+$np->getopts;
+alarm $np->opts->timeout;
+
+
+################################################
+# Determines if array is damaged or recovering #
+################################################
+
+sub check_drive{
+    my ($np,$drive)=@_;
+    # Make sure the device is active or that we're ignoring status
+    if (($drive->{'status'} eq 'active' or $np->opts->ignorestatus ) 
+      #AND make sure it's not in the excluded device list
+      and !(grep (($_ eq $drive->{'name'} ), @{$np->opts->excludedevice} ))){
+
+        my $sourcelist=join(', ',@{$drive->{sources}});
+        #Drive Status should consist ONLY of U's
+        if  ($drive->{'drivestatus'} =~/[^U]/){
+            # If in recoverymode, it's a warning; if it's degrated, it's critical.
+            if ($drive->{'recovery'} =~ /recovery/){
+                $np->nagios_exit(WARNING,  $drive->{'name'}." Attempting to Recover: [".$drive->{'drivestatus'}."] $sourcelist :".$drive->{'recovery'}) ;
+            }else{
+                $np->nagios_exit(CRITICAL, $drive->{'name'}." Appears damaged: [".$drive->{'drivestatus'}."] $sourcelist");
+            }
+        }
+    }
+}
+
+sub parse_structure {
+ my ($drivestructure,@content)=@_;
+    chomp @content; 
+    my ($device,$junk1,$status,$type,@sources) = split / /,$content[0];
+
+    #trim lefthand spaces
+    $content[1]=~s/^ *//;
+
+    #rewrite to reduce content
+    $content[2]=~s/.*= *([0-9.]+\%).*(finish=[0-9.]+min).*/recovery=\1, \2/;
+
+    my ($blocks) = split / blocks/,$content[1];
+    my ($junk,$drivecount,$drivestatus) = split / \[|\] \[|\]/,$content[1];
+    
+    my @drivecount=split /\//, $drivecount;
+
+    $drivestructure->{$device}={ 
+                            'name'       =>$device,        #'name' => 'md2'
+                            'status'     =>$status,        #'status' => 'active'
+                            'type'       =>$type,          #'type' => 'raid5'
+                            'sources'    =>\@sources,      #'sources' => ['sdc2[4](F)','sda3[0]','sdb3[1]','sde3[2] ]
+                            'blocks'     =>$blocks,        #'blocks' => '1461633600'
+                            'drivecount' =>\@drivecount,   #'drivecount'  => ['4','3']
+                            'drivestatus'=>$drivestatus,   #'drivestatus' => 'UUU_'
+                            'recovery'   =>$content[2],
+    };
+
+    return $drivestructure;
+}
+
+
+
+######################################
+# Build data structure from flatfile #
+######################################
+
+my $sourcefile=$np->opts->file ; # should be /proc/mdstat, check examples/ for test settings.
+open MDSTAT, $sourcefile;
+my @content= <MDSTAT>;
+close MDSTAT;
+
+
+my $drivestructure={};
+for (my $i = 1; $i < scalar(@content)-3; $i+=3) {
+    $drivestructure=parse_structure($drivestructure,@content[$i..$i+2]);
+}
+
+print Dumper $drivestructure if ($np->opts->verbose >2 );
+
+
+
+################################
+# Ensure there is a raid array #
+################################
+
+if (keys %$drivestructure == 0){
+    $np->nagios_exit(UNKNOWN, "No valid raid arrays were found!") ;
+}
+
+
+
+####################################
+# Check selected individual device #
+####################################
+
+if ($np->opts->device ne ''){
+    if (defined $drivestructure->{$np->opts->device}){
+        check_drive($np,$drivestructure->{$np->opts->device} );
+
+        $np->nagios_exit(OK, $np->opts->device." functional: [".$drivestructure->{$np->opts->device}->{'drivestatus'}."] ".join ', ', @{$drivestructure->{$np->opts->device}->{'sources'}}) ;
+    }else{
+        $np->nagios_exit(UNKNOWN, $np->opts->device." does not appear to be a valid device( ". join( ', ', sort keys (%$drivestructure)) ." )") ;
+    }
+}
+
+
+
+#####################################
+# Generic check of all raid devices #
+#####################################
+
+foreach my $drivename (sort keys %$drivestructure){
+    check_drive($np,$drivestructure->{$drivename} );
+}
+$np->nagios_exit(OK, " All Devices functional: ".join( ', ', sort keys (%$drivestructure)))  ;
+
+

@@ -1,0 +1,155 @@
+#!/usr/bin/perl -w 
+#
+# check_hits_gns a nagios check plugin for webservices
+#
+# Copyright (C) 2010 Jesse Morgan
+#
+# check_soap
+# This file is part of morgnagplug
+#
+# check_soap is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_soap is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+use strict;
+use Data::Dumper;
+use Nagios::Plugin;
+use Nagios::Plugin::Threshold;
+use LWP::UserAgent;
+use HTTP::Request::Common;
+use Time::HiRes;
+
+#note this is for an internal service and probably not useful for others.
+my $np = Nagios::Plugin->new(  
+    usage => "Usage: %s -u <url> -l <taglist> [-w <float>] [-c <float>] ",
+    version => '1.0',
+    blurb   => 'a check for Hits services',
+    url     => 'https://morgnagplug.svn.sourceforge.net/',
+    license => 'GPL 2',
+    timeout => 15, # default value explictly defined
+);
+
+
+################
+# define flags #
+################
+$np->add_arg(
+        'spec' => "url|u=s",
+        'help' => "URL of SOAP service",
+        'required' => 1,
+   );
+$np->add_arg(
+        'spec' => "taglist|l=s",
+        'help' => "list of taglist",
+        'required' => 1,
+   );
+$np->add_arg(
+        'spec' => "warning|w=s",
+        'help' => "Minimum response time to WARN in seconds (default: 8)",
+        'default' =>8,
+   );
+$np->add_arg(
+        'spec' => "critical|c=s",
+        'help' => "Minimum response time to CRIT in seconds (default: 10)",
+        'default' =>10,
+   );
+
+$np->getopts;
+alarm $np->opts->timeout;
+
+
+###########################
+# parameter sanity checks #
+###########################
+if ($np->opts->url !~ /https?:\/\/.*/ ){
+    $np->nagios_exit(UNKNOWN, "Bad URL: ".$np->opts->url." didn't meet a simple regex rule");
+}elsif (defined $np->opts->critical and $np->opts->critical !~ /^[0-9]+(.[0-9]+)?$/ ){
+    $np->nagios_exit(UNKNOWN, "Bad Critical value: ".$np->opts->critical." should be a numeric value!");
+}elsif (defined $np->opts->warning and $np->opts->warning !~ /^[0-9]+(.[0-9]+)?$/ ){
+    $np->nagios_exit(UNKNOWN, "Bad Warning value: ".$np->opts->warning." should be a numeric value!");
+}elsif (defined $np->opts->warning and defined $np->opts->critical and $np->opts->warning >=$np->opts->critical ){
+    $np->nagios_exit(UNKNOWN, "Bad Warning value: ".$np->opts->warning." should be less than crit (".$np->opts->critical.")");
+}
+
+####################################
+# Actual webservice call goes here #
+####################################
+
+my $userAgent = LWP::UserAgent->new(agent => $np->shortname);
+$userAgent->timeout($np->opts->critical+1);
+my $response;
+my $starttime=[ Time::HiRes::gettimeofday( ) ];
+
+print "Getting..." if ($np->opts->verbose);
+$response = $userAgent->get( $np->opts->url,
+    'Content_Type'      => 'text/xml;charset=UTF-8',
+    'Accept-Encoding'   => 'gzip,deflate',
+    'SOAPAction'        =>  "",
+);
+
+my $elapsedtime = Time::HiRes::tv_interval( $starttime );
+my $threshold = Nagios::Plugin::Threshold->set_thresholds(
+        warning  => $np->opts->warning,
+        critical => $np->opts->critical,
+    );
+
+my @taglist=split /,/, $np->opts->taglist;
+
+
+my $results;
+# loop through the results and create a matching hash
+foreach my $tag (@taglist){
+#	print "tag: ".$tag."\n";
+	$tag = uc $tag;
+	# regex the taglist to capture the value
+	my $value="";
+	my @matches=$response->content =~ m/<$tag>(\d+)<\/$tag>/;
+
+	if (scalar(@matches) > 0){
+		$value=$matches[0];
+	}else{
+		$value=0;
+	}
+	
+	$results->{$tag}=$value;
+}
+
+my (@label,@value);
+#now that each label is sure to have a value, break the hash into matching arrays
+foreach my $key (sort keys %$results){
+	push @label, $key;
+	push @value, $results->{$key};
+}
+	push @label, "response time";
+	push @value, $elapsedtime;
+
+$np->add_perfdata( label => join(', ',@label), value => join(', ',@value));
+
+#check for 4xx or 5xx errors
+if ( $response->code >=400 ){
+    $np->nagios_exit(CRITICAL, "code ".$response->code .": ".$response->message);
+}
+
+# If it took longer than CRIT
+if ($elapsedtime >= $np->opts->critical){
+    $np->nagios_exit(CRITICAL, "Timeout exceeded: it took $elapsedtime second(s); should be under ".$np->opts->critical);
+}
+# If it took longer than WARN
+if ($elapsedtime >= $np->opts->warning){
+    $np->nagios_exit(WARNING, "Timeout exceeded: it took $elapsedtime second(s); should be under ".$np->opts->warning);
+}
+
+#gauntlet complete!
+$np->nagios_exit(OK, "Success");
+
+#The End

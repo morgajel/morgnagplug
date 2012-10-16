@@ -1,0 +1,81 @@
+#!/usr/bin/ruby 
+# check_ajp a nagios check plugin for monitoring AJP services
+#
+# Copyright (C) 2007 Jesse Morgan
+#
+# check_ajp
+# This file is part of check_ajp
+#
+# check_ajp is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_ajp is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+
+require 'rubygems'
+
+require 'optparse'
+require 'net/ajp13/client'
+NAGIOS_OK = 0
+NAGIOS_WARN = 1
+NAGIOS_CRIT = 2
+NAGIOS_UNKN = 3
+
+$options = {}
+$options[:port] = 8009
+$options[:uri] = "/"
+OptionParser.new do |$opts|
+    $opts.banner = "Usage: check_ajp -H host [options] \n"
+
+    $opts.on( "-H host","--host host", " host to use (required)") do |host|
+        $options[:host] = host
+	end
+    $opts.on( "-p port","--port port", " port to use (defaults to 8009)") do |port|
+        $options[:port] = port.to_i || 8009
+    end
+    $opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+    end
+end.parse!
+
+################################
+######### Three States #########
+################################
+
+
+
+########### Unknown ############
+if $options[:host].nil?
+	puts $opts
+	exit NAGIOS_UNKN
+end
+
+
+
+########## Critical ############
+begin
+	res = Net::AJP13::Client.start($options[:host],$options[:port]) { |client|
+		client.ping
+	}
+rescue Exception =>e
+	puts "AJP Error - #{e.to_s}"
+	exit NAGIOS_CRIT
+end
+
+############# OK ###############
+puts "AJP OK - no errors reported."
+exit NAGIOS_OK
+
+
+
+

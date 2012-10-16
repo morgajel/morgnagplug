@@ -1,0 +1,465 @@
+#!/usr/bin/perl -w
+#
+# check_twerl a nagios check plugin for webpage walkthroughs
+#
+# Copyright (C) 2010 Jesse Morgan
+#
+# check_twerl
+# This file is part of morgnagplug
+#
+# check_twerl is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_twerl is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+# Twerl was heavily based on Twill by C. Titus Brown;
+
+package TwerlParser;
+use base qw(WWW::Mechanize);
+use strict;
+use Data::Dumper;
+use feature ":5.10"; #given/when used instead of switch for $1 support
+use HTML::Tidy;
+sub new{
+    my $class=shift;
+    my $self= $class->SUPER::new(@_);
+    $self->{'replacements'}={};
+    $self->{'fail message'}='';
+    $self->{'verbose'}=0;
+    $self->{'quiet'}=0;
+    bless $self,$class;
+    return $self;
+}
+
+sub execute_command{
+    my ($self,$command)=@_;
+    $self->{'fail message'}=''; #make sure to reset this.
+    foreach my $replacement (keys %{$self->{'replacements'}}){
+        $command=~s/\$$replacement/$self->{'replacements'}->{$replacement}/g;
+        $command=~s/\$\{$replacement\}/$self->{'replacements'}->{$replacement}/g;
+    }
+    print "> $command \n" unless($self->{'quiet'});
+
+    given ($command) {
+
+        when (/^\s*reset_browser\s*$/) {
+            print "resetting\n" if ($self->{'verbose'} >0);
+            $self->_reset_page();
+            $self->clear_credentials();
+            return 0;
+        }
+        when (/^\s*agent\s*(.*)\s*$/) {
+            my $agent=$1;
+            $agent=~s/(^['"])|(['"]$)//g;
+            print "setting agent to '$agent'\n" if ($self->{'verbose'} >0);
+            $self->agent( $agent);
+            return 0;
+        }
+        when (/^\s*echo\s*(.*)\s*$/) {
+            my $text=$1;
+            $text=~s/(^['"])|(['"]$)//g;
+            print "echoing $text\n" if ($self->{'verbose'} >0);
+            print "$text\n" unless($self->{'quiet'});
+            return 0;
+        }
+        when (/^\s*go\s*(.*)\s*$/) {
+            my $url=$1;
+            $url=~s/(^['"])|(['"]$)//g;
+            print "going to $url\n" if ($self->{'verbose'} >0);
+            $self->get($url);
+            return 0;
+        }
+        when (/^\s*find\s*(.*)\s*$/) {
+            my $text=$1;
+            $text=~s/(^['"])|(['"]$)//g;
+            print "finding $text\n" if ($self->{'verbose'} >0);
+
+            if ($self->response()->content() !~ /$text/){
+                $self->{'fail message'}= "'$text' was not found";
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*notfind\s*(.*)\s*$/) {
+            my $text=$1;
+            $text=~s/(^['"])|(['"]$)//g;
+            print "not finding $text\n" if ($self->{'verbose'} >0);
+            if ($self->response()->content()=~/$text/){ 
+                $self->{'fail message'}= "'$text' was found";
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*code\s*(.*)\s*$/) {
+            my $code=$1;
+            $code=~s/(^['"])|(['"]$)//g;
+            print "checking for code $code\n" if ($self->{'verbose'} >0);
+            if ($self->status()!=$code){
+                $self->{'fail message'}= "Expected code $code, Recieved ".$self->status();
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*back\s*$/) {
+            print "Going back a page\n" if ($self->{'verbose'} >0);
+            $self->back();
+            return 0;
+        }
+        when (/^\s*reload\s*$/) {
+            print "Reloading a page\n" if ($self->{'verbose'} >0);
+            $self->reload();
+            return 0;
+        }
+        when (/^\s*showlinks\s*$/) {
+            print "show links on a page\n" if ($self->{'verbose'} >0);
+            foreach my $link ( $self->links()){
+                print $link->text  if (defined $link->text and  !$self->{'quiet'});
+                print " : ".$link->url."\n" unless($self->{'quiet'});
+            }
+            return 0;
+        }
+        when (/^\s*follow\s*"?([^"]*)"?\s*(.*)\s*$/) {
+            my $text=$1;
+            my $count=$2||1;
+            
+            my $link=$self->follow_link( text_regex => qr/$text/, n => $count );
+            if (defined $link){
+                print "following '".$text."' ".$self->uri->as_string."\n" if ($self->{'verbose'} >0);
+            }else{
+                $self->{'fail message'}="No link matched '$text' #$count" ;
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*setlocal\s*([^\s]*)\s*(.*)\s*$/) {
+            my $name=$1;
+            my $value=$2;
+            $self->{'replacements'}->{$name}=$value;
+            return 0;
+        }
+        when (/^\s*url\s*(.*)\s*$/) {
+            my $url=$1;
+            $url=~s/(^['"])|(['"]$)//g;
+            print "matching url for $url\n" if ($self->{'verbose'} >0);
+            if ($self->uri->as_string!~/$url/){
+                $self->{'fail message'}="Expected to find $url in  ".$self->uri->as_string;
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*title\s*(.*)\s*$/) {
+            my $title=$1;
+            $title=~s/(^['"])|(['"]$)//g;
+            print "matching title for $title\n" if ($self->{'verbose'} >0);
+             if ($self->title!~/$title/){
+                $self->{'fail message'}="Expected to find $title in ".$self->title; 
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*info\s*$/) {
+            unless($self->{'quiet'}) {
+                print "Page information:\n";
+                print "        URL: ".          $self->uri->as_string."\n";
+                print "        HTTP code: ".    $self->status."\n";
+                print "        Content type: ". $self->response->header('Content-Type')."\n"; 
+                print "        Page title: ".   $self->title."\n";
+                print "        This page contains ".scalar(@{$self->forms()})." form(s)\n";
+                print "\n";
+                print "current page: ".$self->uri->as_string."\n";
+            }
+            return 0;
+        }
+        when (/^\s*save_html\s*(.+)\s*$/) {
+            my $filename=$1  ;
+            $filename=~s/(^['"])|(['"]$)//g;
+            if ($filename ne ''){
+                print "save $filename\n" if ($self->{'verbose'} >0);
+                $self->save_content( $filename );
+            }else{
+                $self->{'fail message'}="failed to save html as '$filename'";
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*showhistory\s*$/) {
+            print "history:\n";
+            foreach my $page (@{ $self->{page_stack}}){
+                print "    ".$page->{'req'}->uri->as_string."\n";
+            }
+            print "    ".$self->{'req'}->uri->as_string."\n";
+            return 0;
+        }
+        when (/^\s*show_cookies\s*$/) {
+            print "Cookies:\n";
+            print "    ". $self->cookie_jar->as_string."\n";
+            return 0;
+        }
+        when (/^\s*save_cookies\s*(.+)\s*$/) {                  #TODO UNTESTED
+            my $filename=$1  ;
+            $filename=~s/(^['"])|(['"]$)//g;
+            if ($filename ne ''){
+                print "save $filename\n" if ($self->{'verbose'} >0);
+                $self->cookie_jar->save( $filename );
+            }else{
+                $self->{'fail message'}="failed to save cookies as '$filename'";
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*load_cookies\s*(.+)\s*$/) {                  #TODO UNTESTED
+            my $filename=$1  ;
+            $filename=~s/(^['"])|(['"]$)//g;
+            if ($filename ne ''){
+                print "load $filename\n" if ($self->{'verbose'} >0);
+                $self->cookie_jar->load( $filename );
+            }else{
+                $self->{'fail message'}="failed to load cookies from '$filename'";
+                return 2;
+            }
+            return 0;
+        }
+        when (/^\s*clear_cookies\s*(.*)\s*$/) {                 #TODO UNTESTED
+            my $params=$1||'' ;
+            $params=~s/['"]//g;
+            $self->cookie_jar->clear(split(/\s*,\s*/,$params)); 
+            return 0;
+        }
+        when (/^\s*sleep\s*(\d*)\s*$/) {
+            my $params=$1||1 ;
+            $params=~s/['"]//g;
+            sleep $params; 
+            return 0;
+        }
+        when (/^\s*exit\s+(\d*)\s*$/) {
+            my $code=$1||0 ;
+            $self->{'fail message'}="exit command returned $code";
+            return $code;
+        }
+        when (/^\s*tidy_ok\s*$/) {                 #TODO UNTESTED
+            my $tidy=HTML::Tidy->new();
+            my $worsterror=0;
+            $tidy->parse('output',$self->res->content);
+            foreach my $message ($tidy->messages ){
+                if ($message->type == TIDY_WARNING and $worsterror < TIDY_WARNING){
+                    $worsterror=TIDY_WARNING;
+                    $self->{'fail message'}="Tidy error:".$message->text;
+                
+                }elsif ($message->type == TIDY_ERROR and $worsterror < TIDY_ERROR){
+                    $worsterror=TIDY_ERROR;
+                    $self->{'fail message'}="Tidy error:".$message->text;
+                }
+            }
+            return $worsterror;
+        }
+        when (/^\s*redirect_output\s+(.+)\s*$/) {
+            my $file=$1;
+            open my $fh, ">&STDOUT" or die "cant duplicate STDOUT";
+            $self->{'original output'}=$fh;
+            close STDOUT;
+            open STDOUT, ">$file";
+            return 0;
+        }
+        when (/^\s*reset_output\s*$/) {
+            my $fh=$self->{'original output'};
+            print "foo\n";
+            close STDOUT; #TODO check to make sure it can open the file
+            open STDOUT, ">&", $fh or die "can't open $fh $!";
+            print "baz\n";
+            return 0;
+        }
+        
+        when (/^\s*showforms\s*$/ or  /^\s*show_forms\s*$/) {
+            my $formID=0;
+            foreach my $form ($self->forms()){
+                my $formname=$form->attr('name')||"";
+                print "-------------\n";
+                print "Form $formID - $formname\n";
+                my $inputID=0;
+                print "Action:".$form->action."\n";
+                foreach my $input ($form->inputs){
+                    my $inputname=($input->name and "name:".$input->name )||( $input->id && "id:".$input->id)||"";
+                    my $inputvalue=$input->value||"";
+                    #print Dumper $input;
+                    print "     $inputID (".$input->type.") $inputname = $inputvalue\n";
+                    $inputID++;
+                }
+                $formID++;
+            }
+        return 0;
+        }
+
+        when ( /^\s*(fv|formvalue)\s+     (\d+)   \s+["']  ([^'"]*)  ['" ]\s+   (.*)  \s*$/x  or  /^\s*(fv|formvalue)\s+  (\d+)    \s+   ([^ ]*)  \s+  (.*)  \s*$/x) {
+            my ($formID,$fieldID,$value)=($2,$3,$4);
+            print "$formID || $fieldID  || $value  \n";
+            if ( defined $self->forms()->[$formID]->find_input($fieldID) ){
+                print "identified by name/ID\n";
+                $self->forms()->[$formID]->find_input($fieldID)->value($value);
+            }elsif ( defined $self->forms()->[$formID]->{'inputs'}->[$fieldID] ){
+                print "identified by index\n";
+                $self->forms()->[$formID]->{'inputs'}->[$fieldID]->value($value);
+            }else{
+                $self->{'fail message'}="unable to set $fieldID=\"$value\" on Form $formID";
+                return 2 ;
+            }
+            return 0;
+        }
+        when (/^\s*(fa|formaction)\s+(\d+)\s+(.*)\s*$/x) {  #TODO UNTESTED
+            my ($formID,$url)=($2,$3);
+            if ($self->forms()->[$formID]->action($url)){
+                return 0;
+            }else{
+                $self->{'fail message'}="unable to set $url on Form $formID";
+                return 2 ;
+            }
+
+        }
+        when (/^\s*(submit)\s+(\d+)\s*$/) {  #TODO UNFINISHED
+#            print Dumper $self->click( [ $self->find_all_submits()]->[$1]) ;
+            return 0
+        }
+    }
+  
+
+
+#    submit [<n>] 
+#
+#    formclear 
+#
+#    formfile <formspec> <fieldspec> <filename> [ <content_type> ] 
+#
+#
+#    debug <what> <level> 
+#
+#    setglobal <name> <value> 
+#
+#
+#    run <command> 
+#
+#    runfile <file1> [ <file2> ... ] 
+#
+#
+#    reset_browser 
+#
+#    extend_with <module> 
+#
+#    getinput <prompt> 
+#
+#    getpassword <prompt> 
+#
+#    add_auth <realm> <uri> <user> <password> 
+#
+#
+#    config [<key> [<value>]] 
+#
+#    add_extra_headers <name> <value> 
+#
+#    show_extra_headers 
+#
+#    clear_extra_headers 
+#
+#    __input__ 
+#
+#    __match__ 
+#
+#    __password__ 
+#
+#    __url__ 
+$self->{'fail message'}="I didn't recognize '$command'";
+return 3
+}
+
+
+
+
+package main;
+use strict;
+use Data::Dumper;
+use Time::HiRes;
+use Nagios::Plugin;
+use Nagios::Plugin::Threshold;
+
+my $np = Nagios::Plugin->new(  
+    usage => "Usage: %s -f <file> ",
+    version => '1.0',
+    blurb   => 'a site walkthrough check',
+    url     => 'https://morgnagplug.svn.sourceforge.net/',
+    license => 'GPL 2',
+);
+
+my $p = TwerlParser->new;
+################
+# define flags #
+################
+$np->add_arg(
+        'spec' => "file|f=s",
+        'help' => "file to load",
+   );
+$np->add_arg(
+        'spec' => "quiet|q",
+        'help' => "silence normal output",
+   );
+
+$np->getopts;
+#alarm $np->opts->timeout; #tests taking longer than default 15 seconds
+
+
+
+###################
+# Load Twerl file #
+###################
+my @commands;
+if (defined $np->opts->file and -e $np->opts->file ){
+    open CFILE, $np->opts->file;
+    @commands=<CFILE>;
+    chomp @commands;
+    @commands=grep(! /^[\s]*$/, @commands);
+    @commands=grep(! /^[\s]*#.*$/, @commands);
+    close CFILE;
+
+}else{
+    $np->nagios_exit(UNKNOWN, "No query or file provided, or file was not found!");
+}
+
+#########################
+# Process commands here #
+#########################
+
+my $time=[ Time::HiRes::gettimeofday( ) ];
+
+foreach my $command (@commands){
+    my $result=$p->execute_command($command) ;
+    if ( $result ==1){
+         $np->nagios_exit(WARNING,  $p->{'fail message'} );
+    }elsif ( $result ==2){
+         $np->nagios_exit(CRITICAL,  $p->{'fail message'} );
+    }elsif ( $result ==3){
+         $np->nagios_exit(UNKNOWN,  $p->{'fail message'} );
+    }
+}
+$time=Time::HiRes::tv_interval( $time );
+
+
+
+$np->add_perfdata( label => "response time", value => $time, uom => " seconds");
+
+
+#gauntlet complete!
+$np->nagios_exit(OK, "Success");
+
+#The End
+
+
+
+
+
+
+

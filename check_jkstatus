@@ -1,0 +1,158 @@
+#!/usr/bin/env perl
+
+#
+# check_jkstatus a nagios check plugin for webservices
+#
+# Copyright (C) 2010 Jesse Morgan
+#
+# check_jkstatus
+# This file is part of morgnagplug
+#
+# check_jkstatus is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_jkstatus is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+# This is inspired by check_jk_status by dkerwin which can be found at:
+# http://www.monitoringexchange.org/inventory/Check-Plugins/Hardware/Devices/Misc/check_jk_status
+# This is more or less a complete rewrite, and the name is changed to differenciate between the two.
+
+
+use strict;
+use Data::Dumper;
+use Nagios::Plugin;
+use LWP::UserAgent;
+use XML::Simple;
+
+# Create the plugin object, then add arguments
+my $np = Nagios::Plugin->new(
+    usage => "Usage: %s -u <url> [-b <balancer>]|[-l] ",
+    version => '1.0',
+    blurb   => 'a check for jkstatus',
+    url     => 'https://morgnagplug.svn.sourceforge.net/',
+    license => 'GPL 2',
+    timeout => 15, # default value explictly defined
+);
+
+################
+# define flags #
+################
+
+$np->add_arg(
+        'spec' => "url|u=s",
+        'help' => "URL of jkstatus",
+        'required' => 1,
+   );
+$np->add_arg(
+        'spec' => "list|l",
+        'help' => "list the balancers available",
+   );
+$np->add_arg(
+        'spec' => "balancer|b=s",
+        'help' => "name of the balancer you wish to check",
+   );
+
+$np->getopts;
+alarm $np->opts->timeout;
+
+
+######################
+# Grab data from URL #
+######################
+
+# Grab the XML version of jkstatus from the url by appending ?mime=xml
+my $fullURL=$np->opts->url."?mime=xml";
+print "Getting...$fullURL\n" if ($np->opts->verbose>0);
+my $userAgent = LWP::UserAgent->new(agent => $np->shortname);
+my $response = $userAgent->get( $fullURL, 'Content_Type' => 'text/xml;charset=UTF-8' );
+
+# Fail if it's a 4xx or 5xx.
+if ( $response->code >=400 ){
+    $np->nagios_exit(UNKNOWN, "code ".$response->code .": ".$response->message);
+}
+
+# See? Here's our pretty content:
+print Dumper($response->content)  if ($np->opts->verbose >3);
+
+
+######################
+# Load Data from XML #
+######################
+
+#read in the response content xml and create an object
+my $status = XMLin($response->content, forcearray => ['jk:member']);
+
+
+# List count, then exit
+# useful when testing, probably not much for monitoring
+if ($np->opts->list){
+    my @balancers= sort keys %{$status->{'jk:balancers'}->{'jk:balancer'}};
+    $np->add_perfdata( label => "count", value =>scalar(@balancers), );
+    $np->nagios_exit(OK, 'The following '.scalar(@balancers).' balancer(s) are available- '.join(', ',@balancers));
+}
+
+####################################
+# Ensure that balancer was located #
+####################################
+
+# Fail if it can't find that balancer
+if ( ! defined %{$status->{'jk:balancers'}->{'jk:balancer'}->{$np->opts->balancer}}  ){
+    $np->nagios_exit(UNKNOWN, "Bad balancer: '".$np->opts->balancer."' wasn't found!");
+}
+
+#Simplify the balancer down to an easier to type variable
+my $balancer=$status->{'jk:balancers'}->{'jk:balancer'}->{$np->opts->balancer};
+print Dumper($balancer) if ($np->opts->verbose>1);
+
+
+
+
+########################################
+# Look for bad Nodes in the XML Object #
+########################################
+
+#The following will contain a list of good and bad members
+my (@badmembers, @goodmembers,$member_count);
+
+# found behavior in mod_jk 1.2.28 that makes ->{'good'} and ->{'bad'} untrustworthy; 
+# bad will occasionally be marked as good only to fail and be bad again;
+foreach my $memberid ( sort keys %{$balancer->{'jk:member'}}){
+    $member_count++;
+    # simplify member like we did balancer
+    my $member = $balancer->{'jk:member'}->{$memberid};
+    print "$memberid  ".$member->{'activation'}."  ".$member->{'state'}. "\n" if ($np->opts->verbose>0);
+
+    if ($member->{'state'} =~ /^ERR/ and $member->{'activation'} eq 'ACT' ){
+        # Count it as bad, even if it's ready to be recovered. Until it's proven good, it's bad.
+        push @badmembers, $memberid;
+    }elsif ($member->{'state'} =~ /^OK/ and $member->{'activation'} eq 'ACT' ){
+        push @goodmembers, $memberid;
+    }
+}
+# add our newfound data to the performance data
+$np->add_perfdata( label => "good/bad nodes", value =>scalar(@goodmembers).",".scalar(@badmembers) , min=>scalar(@badmembers) , max=>$member_count );
+
+###################
+# Process Results #
+###################
+
+if ( scalar(@badmembers) > 0 ) {
+    if ( $balancer->{'bad'} == 0 ) {
+        $np->nagios_exit(WARNING, scalar(@badmembers)." member in error state(@badmembers), but ".(scalar(@badmembers)-$balancer->{'bad'})." marked as ready");
+    }else{
+        $np->nagios_exit(CRITICAL, scalar(@badmembers)." member down (@badmembers)");
+    }
+}else{
+    $np->nagios_exit(OK, "Success with ".scalar(@goodmembers)." good nodes of ".$member_count." available nodes" );
+}
+
+#The End
+

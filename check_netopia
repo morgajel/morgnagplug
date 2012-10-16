@@ -1,0 +1,131 @@
+#!/usr/bin/perl -w
+#
+# check_netopia a nagios check plugin for monitoring Netopia routers
+#
+# Copyright (C) 2007 Jesse Morgan
+# BASED ON: check_telnet, Copyright 2006 Eli Stair <eli.stair {at} gmail {dot} com>
+#
+# check_netopia
+# This file is part of check_netopia
+#
+# check_netopia is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_netopia is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+use Getopt::Long;
+use Net::Telnet ();
+use Data::Dumper;
+use strict;
+
+my ($host, $port, $output);
+my ($username, $password);
+my ($cmd, $telnet);
+
+
+#########
+#Full process is run right here.
+process_args();
+connect();
+run_cmd();
+
+#########
+
+
+my @cmdlist=('cvcrc','latn','snrmargin','power');
+
+# Use GetOptions to sort and process arguments.
+sub process_args {
+    GetOptions (
+        "h|host=s" => \$host,
+        "p|port=i" => \$port, 
+        "c|command=s" => \$cmd, 
+        "user=s" => \$user,
+        "password=s" => \$password,
+    );
+    $cmd = $cmd || 'snrmargin';
+    $port = $port ||'23';
+
+    unless (grep {$cmd} @cmdlist )         { &cmd_usage ; exit 1 };
+    unless ($host and $user and $password) { &cmd_usage ; exit 1 };
+}
+
+#This include a basic rundown of commands you can run on the CLI; the most useful commands are listed below.
+sub cmd_usage {
+    print "\n";
+    print "\t-h\t hostname/IP: of host to use\n";
+    print "\t-p\t Port: to connect to and retrieve data\n";
+    print "\t-c\t command to run: \n";
+    print "\t\t\t  -  cvcrc    CRC Errors\n";
+    print "\t\t\t  -  latn     Line Attenuation\n";
+    print "\t\t\t  -  snrmargin Signal:Noise Ratio Margin \n";
+    print "\t\t\t  -  power    ?   \n";
+}
+
+
+#establish the connection; if it can't connect, die a horrible death.
+sub connect {
+	$telnet = new Net::Telnet (	Telnetmode => 0, Timeout => 5,);
+	# set up object
+	unless ($telnet->open(Host => $host, Port => $port)) {
+	  die "Can't connect to ($host) ($port)! ";
+	  print "CRITICAL: cannot connect to $host \n";
+	  exit 2;
+	}
+}
+
+
+	
+sub run_cmd {
+	$telnet->print(""); #FIXME I don't remember why this is here...
+
+    #Log in
+	unless ($telnet->login($user, $password)) {
+	    print "Can't connect to ($host) as ($user):($password)! \n";
+	    exit 1;
+	}
+    #magic enables special command access...
+	$telnet->cmd('magic');
+
+    my $status="Margin OK -";
+    my $retval=0;
+	my $usout=($telnet->cmd("dsm us $cmd"))[1];
+	my $dsout=($telnet->cmd("dsm ds $cmd"))[1];
+    chomp $dsout;
+    chomp $usout;
+
+    #make sure it's in sync, then parse the data.
+    if ($usout =~/not in sync/){
+	    $status= "Margin CRITICAL - ";
+        $usout='-10';
+        $retval=2;
+    }else{
+        $usout=~s/^.*LINE #1 \w.*\w *([.\d]+) *dB.*$/$1/;#TODO rewrite cleanup- pick up here, unfinished
+    }
+    if ($dsout =~/not in sync/){
+	     $status= "Margin CRITICAL - ";
+         $dsout='-10';
+         $retval=2;
+    }else{
+        $dsout=~s/^.*LINE #1 SNRM.s *([.\d]+) *dB.*$/$1/;
+    }
+    #print out status in a friendly format.
+    print "$status Downstream: $dsout dB, Upstream: $usout dB | downstream=$dsout upstream=$usout";
+    #log out
+    #clean up the connection
+    $telnet->print("logout");
+    $telnet->close;
+    #return the final value
+    return $retval;
+}
+
+

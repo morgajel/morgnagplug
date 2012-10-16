@@ -1,0 +1,269 @@
+#!/usr/bin/perl 
+#
+# check_sql a nagios check plugin for monitoring databases
+#
+# Copyright (C) 2007 Jesse Morgan
+# BASED ON: check_oracle_generic, Copyright 2006 David Ligeret (david.ligeret at gmail.com)
+#
+# check_sql
+# This file is part of morgnagplug
+#
+# check_sql is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# check_sql is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+
+use strict;
+use Data::Dumper;
+use Nagios::Plugin;
+use DBI;
+
+my $np = Nagios::Plugin->new(  
+    usage => "Usage: %s --driver <driver> -q|f <value>  [options]",
+
+    version => '2.0',
+    blurb   => 'a check for sql',
+    url     => 'https://morgnagplug.svn.sourceforge.net/',
+    license => 'GPL 2',
+    timeout => 15, # default value explictly defined
+);
+$np->add_arg(
+        'spec' => "driver|D=s",
+        'help' => "Type of DBI driver (case sensitive)",
+        'required' => 1,
+   );
+$np->add_arg(
+        'spec' => "user|u=s",
+        'help' => "Username for the database",
+   );
+$np->add_arg(
+        'spec' => "password|p=s",
+        'help' => "Password for the database",
+   );
+$np->add_arg(
+        'spec' => "sid|s=s",
+        'help' => "Oracle SID/DB Name (required for oracle driver)",
+   );
+$np->add_arg(
+        'spec' => "dsn=s",
+        'help' => "DSN (required for ODBC driver)",
+   );
+$np->add_arg(
+        'spec' => "host|H=s",
+        'help' => "Host server",
+   );
+$np->add_arg(
+        'spec' => "dbname=s",
+        'help' => "Name of the target database",
+   );
+$np->add_arg(
+        'spec' => "query|q=s",
+        'help' => "SQL Query (should return a number)",
+   );
+$np->add_arg(
+        'spec' => "file|f=s",
+        'help' => "file containt SQL (should return a number)",
+   );
+$np->add_arg(
+        'spec' => "units|U=s",
+        'help' => "Units of returned value",
+   );
+$np->add_arg(
+        'spec' => "port|P=s",
+        'help' => "port to connect to",
+   );
+$np->add_arg(
+        'spec' => "warning|w=s",
+        'help' => "value needed to Warn (default is under)",
+   );
+$np->add_arg(
+        'spec' => "critical|c=s",
+        'help' => "value needed to Crit (default is under)",
+   );
+$np->add_arg(
+        'spec' => "type|t=s",
+        'help' => "type of threshold (return value is over|under|range|equal WARN or CRIT; default is 'under')
+        if VALUE is over 3, WARN;
+        if VALUE is under 3, WARN;
+        if VALUE is equal 3, WARN;
+        if VALUE is unequal 3, WARN;
+        if VALUE is inside (15,20), WARN;
+        if VALUE is outside (4,30), WARN;",
+        'default' => 'under',
+   );
+
+
+$np->getopts;
+alarm $np->opts->timeout;
+
+
+
+###########################
+# parameter sanity checks #
+###########################
+$np->nagios_exit(UNKNOWN, "No SID: SID is required for Oracle!") if ($np->opts->driver eq 'Oracle' and $np->opts->sid eq '');
+$np->nagios_exit(UNKNOWN, "No DSN: DSN is required for ODBC!")   if ($np->opts->driver eq 'ODBC'   and $np->opts->dsn eq '');
+
+
+# I'm not going to add sanity checking for types with crit and warns, please replace with common sense.
+
+
+
+#####################################
+# database connection sanity checks #
+#####################################
+
+my %attr = (PrintError => 0);
+my $querystring;
+my $dbstring="dbi:".$np->opts->driver.":";
+
+
+# The following are appended to the dbstring in a reasonable order (if they exist)
+$dbstring.='database='.$np->opts->dbname.";"    if ($np->opts->dbname);
+$dbstring.='host='.$np->opts->host.";"          if ($np->opts->host);
+$dbstring.='sid='.$np->opts->sid.";"            if ($np->opts->sid);
+$dbstring.='port='.$np->opts->port.";"          if ($np->opts->port);
+$dbstring.=$np->opts->dsn                       if ($np->opts->dsn);
+
+
+print "$dbstring\n"  if ($np->opts->verbose > 0);
+
+
+#Connect to the Database
+my $dbh = DBI->connect( $dbstring, $np->opts->user,$np->opts->password, \%attr) or $np->nagios_exit(UNKNOWN, "DB String: $DBI::errstr");
+
+
+
+#######################
+# Get the querystring #
+#######################
+# Prep the query, either from command line or from file. Fail if unable to locate.
+if (defined $np->opts->query ){
+    $querystring=$np->opts->query;
+}elsif (defined $np->opts->file and -e $np->opts->file ){
+    open QFILE, $np->opts->file;
+    $querystring=join ' ', <QFILE>;
+    close QFILE;
+}else{
+    $np->nagios_exit(UNKNOWN, "No query or file provided, or file was not found!");
+}
+
+
+
+#########################################
+# Execute the query and capture results #
+#########################################
+# Prepare and execute query
+my $statement = $dbh->prepare($querystring  ) or $np->nagios_exit(UNKNOWN, "Prepare error: $DBI::errstr");
+
+$statement->execute()or $np->nagios_exit(UNKNOWN, "Execution error: $DBI::errstr");
+
+# retrieve result
+my $value =  $statement->fetchrow_array();
+$statement->finish();
+
+
+
+####################
+## Process Results #
+####################
+
+$np->add_perfdata( label => "Results", 'value' =>$value , warning  => $np->opts->warning, critical => $np->opts->critical );
+
+
+if ($np->opts->type eq 'under' ){
+    if     ($np->opts->critical ne '' and $value <= $np->opts->critical ){
+        $np->nagios_exit(CRITICAL, "result: ($value) less than or equal to ".$np->opts->critical );
+    }elsif ($np->opts->warning ne '' and $value <= $np->opts->warning){
+        $np->nagios_exit(WARNING,  "result: ($value) less than or equal to ".$np->opts->warning );
+    }else{
+        $np->nagios_exit(OK, "Success:  $value ".$np->opts->units);
+    }
+
+
+
+}elsif ($np->opts->type eq 'over' ){
+    if     ($np->opts->critical ne '' and $value >= $np->opts->critical ){
+        $np->nagios_exit(CRITICAL, "result: ($value) greater than or equal to ".$np->opts->critical );
+    }elsif ($np->opts->warning ne '' and $value >= $np->opts->warning){
+        $np->nagios_exit(WARNING,  "result: ($value) greater than or equal to ".$np->opts->warning );
+    }else{
+        $np->nagios_exit(OK, "Success:  $value ".$np->opts->units);
+    }
+
+
+
+}elsif ($np->opts->type eq 'equal' ){
+    if     ($np->opts->critical ne '' and $value eq $np->opts->critical ){
+        $np->nagios_exit(CRITICAL, "result: ($value) equal to ".$np->opts->critical );
+    }elsif ($np->opts->warning ne '' and $value eq $np->opts->warning){
+        $np->nagios_exit(WARNING,  "result: ($value) equal to ".$np->opts->warning );
+    }else{
+        $np->nagios_exit(OK, "Success:  $value ".$np->opts->units);
+    }
+
+
+
+}elsif ($np->opts->type eq 'unequal' ){
+    # usage: warn/crit if returned value is unequal to crit value i.e
+    # "value should always be X, if not, alert!"
+    if     ($np->opts->critical ne '' and $value ne $np->opts->critical ){
+        $np->nagios_exit(CRITICAL, "result: ($value) unequal to ".$np->opts->critical );
+    }elsif ($np->opts->warning ne '' and $value ne $np->opts->warning){
+        $np->nagios_exit(WARNING,  "result: ($value) unequal to ".$np->opts->warning );
+    }else{
+        $np->nagios_exit(OK, "Success:  $value ".$np->opts->units);
+    }
+
+
+
+}elsif ($np->opts->type eq 'outside' ){
+    my ($warnlow,$warnhigh)=split ",",$np->opts->warning;
+    my ($critlow,$crithigh)=split ",",$np->opts->critical;
+
+    if ($np->opts->critical ne ''  and ($value <= $critlow or $value >=$crithigh) ){
+        $np->nagios_exit(CRITICAL, "result ($value) outside of range" );
+    }elsif ($np->opts->warning and ($value <= $warnlow or $value >=$warnhigh) ){
+        $np->nagios_exit(WARNING, "result ($value) outside of range" );
+    }else{
+        $np->nagios_exit(OK, "result: $value ".$np->opts->units );
+    }
+
+
+
+#Not sure why anyone would care if something fell WITHIN range, but included for completeness
+}elsif ($np->opts->type eq 'inside' ){
+    my ($warnlow,$warnhigh)=split ",",$np->opts->warning;
+    my ($critlow,$crithigh)=split ",",$np->opts->critical;
+
+    if ($np->opts->critical ne ''  and ($value >= $critlow and $value <=$crithigh) ){
+        $np->nagios_exit(CRITICAL, "result ($value) inside of range" );
+    }elsif ($np->opts->warning and ($value >= $warnlow and $value <=$warnhigh) ){
+        $np->nagios_exit(WARNING, "result ($value) inside of range" );
+    }else{
+        $np->nagios_exit(OK, "result: $value ".$np->opts->units );
+    }
+
+
+
+}else{
+    ##not sure what, if anything, should go here.
+    $np->nagios_exit(UNKNOWN, "Query Type Error: no idea what '".$np->opts->type."' is...");
+}
+
+
+
+## If you get this, please report how you did it.
+$np->nagios_exit(UNKNOWN, "WTF Error: I have no idea how you got here.");
+
+
