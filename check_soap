@@ -31,7 +31,7 @@ use Time::HiRes;
 
 
 my $np = Nagios::Plugin->new(  
-    usage => "Usage: %s -u <url> [-m <striddng>] [-n <string>] [-p <filename>] [-w <float>] [-c <float>] [--ignore-faults] ",
+    usage => "Usage: %s -u <url> [-m <striddng>] [-n <string>] [-p <filename>] [-w <float>] [-c <float>] [--ignore-faults] [-s <soapaction>]",
     version => '1.0',
     blurb   => 'a check for soap services',
     url     => 'https://morgnagplug.svn.sourceforge.net/',
@@ -69,6 +69,11 @@ $np->add_arg(
         'spec' => "critical|c=s",
         'help' => "Minimum response time to CRIT in seconds (default: 10)",
         'default' =>10,
+   );
+$np->add_arg(
+        'spec' => "soapaction|s=s",
+        'help' => "Soap action (default is blank)",
+        'default' =>'',
    );
 $np->add_arg(
         'spec' => "ignorefaults",
@@ -124,7 +129,7 @@ if ($httpmethod eq "POST"){
     $response = $userAgent->post($np->opts->url,
         'Content_Type'      => 'text/xml;charset=UTF-8',
         'Accept-Encoding'   => 'gzip,deflate',
-        'SOAPAction'        =>  "",
+        'SOAPAction'        => $np->opts->soapaction,
         'Content'           => $postdata
     );
 }else{
@@ -132,7 +137,7 @@ if ($httpmethod eq "POST"){
     $response = $userAgent->get( $np->opts->url,
         'Content_Type'      => 'text/xml;charset=UTF-8',
         'Accept-Encoding'   => 'gzip,deflate',
-        'SOAPAction'        =>  "",
+        'SOAPAction'        => $np->opts->soapaction,
     );
 }
 my $elapsedtime = Time::HiRes::tv_interval( $starttime );
@@ -140,7 +145,7 @@ my $threshold = Nagios::Plugin::Threshold->set_thresholds(
         warning  => $np->opts->warning,
         critical => $np->opts->critical,
     );
-$np->add_perfdata( label => "response time", value => $elapsedtime, uom => " seconds", threshold =>  $threshold );
+$np->add_perfdata( label => "time", value => $elapsedtime, uom => "s", threshold =>  $threshold );
 
 
 
