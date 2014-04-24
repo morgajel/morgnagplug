@@ -1,4 +1,6 @@
 morgnagplug
 ===========
 
-Morgajel's Nagios Plugins
+Morgajel's Monitoring Plugins
+
+Compatible with Icinga, Nagios, and related systems
