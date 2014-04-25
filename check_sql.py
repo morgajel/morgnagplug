@@ -29,6 +29,7 @@ import nagiosplugin
 import argparse
 import logging
 from sqlalchemy import create_engine
+from sqlalchemy import databases
 from sqlalchemy.sql import text
 
 _log = logging.getLogger('nagiosplugin')
@@ -36,42 +37,49 @@ _log = logging.getLogger('nagiosplugin')
 
 class SQL(nagiosplugin.Resource):
 
+    def __init__(self,args):
+        self.args=args
+        
+
     def probe(self):
         _log.info('attempting to connect to the DB')
         # faking a result of 10 returned rows
-        engine = create_engine("mysql+pymysql://test:test@localhost/test") 
-        s = text( "Select 1")
-        results=engine.execute(s).fetchall()[0] 
-
-        yield nagiosplugin.Metric('rows', results, min=0, context='sql')
-
-
-
-
+        args=self.args
+        if args.driver == 'mysql':
+            engine = create_engine("mysql+pymysql://test:test@localhost/test") 
+            results=engine.execute( text(args.query) ).fetchall()[0][0]
+            yield nagiosplugin.Metric('rows', results, min=0, context='sql')
+        else:
+            raise nagiosplugin.CheckError("This driver is not currently supported, sorry.") 
 
 
+class SQLContext(nagiosplugin.ScalarContext):
 
-
-
-
-
-
-
-
+    def __init__(self, name, args):
+        nagiosplugin.ScalarContext.__init__(self, name, args.warning, args.critical)
+        self.args=args
+        if args.driver == 'oracle' and args.sid == '':
+            raise nagiosplugin.CheckError("Oracle driver requires a --sid") 
+        elif args.driver == 'odbc' and args.dsn == '':
+            raise nagiosplugin.CheckError("ODBC requires a --dsn") 
+    def evaluate(self, metric, resource):
+        result= nagiosplugin.ScalarContext.evaluate(self, metric, resource)
+        
+        return result
 
 
 class SQLSummary(nagiosplugin.Summary):
     """Resulting Query Information."""
 
     def ok(self, results):
-        return 'SQL results is %s' % results
+        return 'SQL results for %s' % str(results['rows'])
 
 @nagiosplugin.guarded
 def main():
     argp = argparse.ArgumentParser(description=__doc__)
-    argp.add_argument('-w', '--warning', metavar='RANGE',
+    argp.add_argument('-w', '--warning', metavar='RANGE', default="1:100",
                       help='return warning if sql is outside RANGE')
-    argp.add_argument('-c', '--critical', metavar='RANGE',
+    argp.add_argument('-c', '--critical', metavar='RANGE', default="1:100",
                       help='return critical if sql is outside RANGE')
     argp.add_argument('-H', '--host',       default='localhost')
     argp.add_argument('-P', '--password',   default='')
@@ -95,17 +103,10 @@ def main():
         if VALUE is outside (4,30), WARN;""")
     args = argp.parse_args()
 
-    if args.driver != 'mysql':
-        raise Exception("mysql is the only driver supported currently") 
-    if args.driver == 'oracle' and args.sid == '':
-        raise Exception("Oracle driver requires a --sid") 
-    if args.driver == 'odbc' and args.dsn == '':
-        raise Exception("ODBC requires a --dsn") 
-
 
     check = nagiosplugin.Check(
-        SQL(),
-        nagiosplugin.ScalarContext('sql', args.warning, args.critical),
+        SQL(args),
+        SQLContext('sql', args),
         SQLSummary() )
     check.main(verbose=args.verbose)
 
