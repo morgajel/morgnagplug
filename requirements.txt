@@ -12,3 +12,4 @@ pyflakes
 flakeplus
 argparse
 pynagios
+requests
