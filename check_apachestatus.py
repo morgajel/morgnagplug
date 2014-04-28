@@ -2,110 +2,80 @@
 ####################### check_apachestatus.py #######################
 # Licence : GPL - http://www.fsf.org/licenses/gpl.txt
 #############################################################
-# 20070727 Lieven.DeBodt at gmail.com v1.1
-#          Authored: De Bodt Lieven (Lieven.DeBodt at gmail.com)
-#
-# 20080912 <karsten at behrens dot in> v1.2
-#          added output of Requests/sec, kB/sec, kB/request  
-#          changed perfdata output so that PNP accepts it
-#          http://www.behrens.in/download/check_apachestatus.pl.txt
-#
-# 20080930 <karsten at behrens dot in> v1.3
-#          Fixed bug in perfdata regexp when Apache output was
-#          "nnn B/sec" instead of "nnn kB/sec"
-#
-# 20081231 <geoff.mcqueen at hiivesystems dot com > v1.4
-#          Made the scale logic more robust to byte only, kilobyte
-#          and provided capacity for MB and GB scale options
-#          on bytes per second and bytes per request (untested)
-#
-# 20130326 <morgajel at gmail dot com> v1.5
-#          Adding https support
-#
-# 20130326 <morgajel at gmail dot com> v1.6
+# Inspired by De Bodt Lieven's perl implementation
+# 20140428 <morgajel at gmail dot com> v1.6
 #          rewriting in python
-#
-import pynagios
+
+from pynag.Plugins import PluginHelper,ok,warning,critical,unknown
 import urllib2
-from pynagios import Plugin, Response, make_option
 import re
-class MyCheck(Plugin):
-    ssl  = make_option("--ssl",  action="store_true")
-    port = make_option("-p", "--port",      type="int", default="80")
+import sys
+import time
 
-    def check(self):
+# Create an instance of PluginHelper()
+my_plugin = PluginHelper()
 
-        #because plugin timeout of zero and urllib2's timeout of zero do different things...
-        if self.options.timeout == 0:
-            self.options.timeout=None
-
-        try:
-            if self.options.ssl: 
-                website = urllib2.urlopen('https://%s:%i/server-status?auto' % 
-                            ( self.options.hostname, self.options.port),None, self.options.timeout )
-            else:
-                website = urllib2.urlopen('http://%s:%i/server-status?auto' % 
-                            ( self.options.hostname, self.options.port), None, self.options.timeout )
-            
-            content = website.read().strip()
-            results = dict(re.split(':\s*', line) for line in content.split('\n'))
-
-        except urllib2.HTTPError, e:
-            return Response(pynagios.UNKNOWN, 
-                            "Cannot retrieve URL: HTTP Error Code %s" % e.code )
-        except urllib2.URLError, e:
-            return Response(pynagios.UNKNOWN, 
-                            "Cannot retrieve URL: " + e.reason[1])
-
-        return self.response_for_value(results)
-
-    def response_for_value(self, results):
-        response=Response(pynagios.OK);
-        response.set_perf_data('total accesses', results['Total Accesses'], uom='c', )
-        response.set_perf_data('total kBytes', results['Total kBytes'], uom='kb', )
-        response.set_perf_data('CPULoad', float(results['CPULoad'])*100, uom='%', )
-        response.set_perf_data('Uptime', results['Uptime'], uom='c', )
-
-        return response
-
-#ReqPerSec: .0207126
-#BytesPerSec: 313.067
-#BytesPerReq: 15114.8
-#BusyWorkers: 1
-#IdleWorkers: 13
-#Scoreboard: ____________W_..................................................................................................................................................................................................................................................................................................................................................................................................
-#
-#
+# Add all of our wonderful flags
+my_plugin.parser.add_option('-H', '--hostname', type="string",      default="127.0.0.1",    dest="hostname" )
+my_plugin.parser.add_option('-p', '--port',     type="int",         default="80",           dest="port" )
+my_plugin.parser.add_option('-s', '--ssl',      help="enable ssl",  action="store_true",    dest="ssl" )  
+my_plugin.parser.add_option('-w', '--warning',  type="string",      default="5",            dest="warning" )
+my_plugin.parser.add_option('-c', '--critical', type="string",      default="10",           dest="critical" )
+my_plugin.parse_arguments()
 
 
-#Note :
-#  The script will return
-#    * Without warn and critical options:
-#        OK       if we are able to connect to the apache server's status page,
-#        CRITICAL if we aren't able to connect to the apache server's status page,,
-#    * With warn and critical options:
-#        OK       if we are able to connect to the apache server's status page and #available slots > <warn_level>,
-#        WARNING  if we are able to connect to the apache server's status page and #available slots <= <warn_level>,
-#        CRITICAL if we are able to connect to the apache server's status page and #available slots <= <crit_level>,
-#        UNKNOWN  if we aren't able to connect to the apache server's status page
-#
-#Perfdata legend:
-#"_;S;R;W;K;D;C;L;G;I;.;1;2;3"
-#_ : Waiting for Connection
-#S : Starting up
-#R : Reading Request
-#W : Sending Reply
-#K : Keepalive (read)
-#D : DNS Lookup
-#C : Closing connection
-#L : Logging
-#G : Gracefully finishing
-#I : Idle cleanup of worker
-#. : Open slot with no current process
-#1 : Requests per sec
-#2 : kB per sec
-#3 : kB per Request
+# Set the proper protocol
+if my_plugin.options.ssl:
+    my_plugin.options.protocol='https'
+else:
+    my_plugin.options.protocol='http'
 
-if __name__ == "__main__":
-    # Instantiate the plugin, check it, and then exit
-    MyCheck().check().exit()
+
+# Try to download the serverstatus page and do some basic data munging.
+try:
+    start = time.time()
+    website = urllib2.urlopen('%s://%s:%i/server-status?auto' % 
+                  (my_plugin.options.protocol,my_plugin.options.hostname,my_plugin.options.port), None,my_plugin.options.timeout )
+    content= website.read().strip()
+    # Split each parameter into a dict
+    results = dict(re.split(':\s*', line) for line in content.split('\n'))
+    results['OpenSlots']= results['Scoreboard'].count('.')
+    results['ResponseTime']="{0:.4f}".format(time.time() - start)
+
+# Catch any Errors
+except urllib2.HTTPError, e:
+    my_plugin.exit(summary="Cannot retrieve URL: HTTP Error Code %s" % e.code, long_output=str(e), exit_code=unknown)
+except urllib2.URLError, e:
+    my_plugin.exit(summary="Cannot retrieve URL: Perhaps a bad protocol (ssl not supported)?" , long_output=str(e), exit_code=unknown)
+except Exception, e:
+    my_plugin.exit(summary="Something horrible happened:", long_output=str(e), exit_code=unknown, perfdata='')
+
+
+# Lets Parse the data:
+my_plugin.add_summary( "%s seconds response time" % results['ResponseTime'])
+
+# and add metrics:
+my_plugin.add_metric( label='Total Accesses', value=results['Total Accesses'], uom='c', )
+my_plugin.add_metric( label='Total kBytes', value=results['Total kBytes'], uom='kb', )
+my_plugin.add_metric( label='CPULoad',      value=float(results['CPULoad'])*100, uom='%', )
+my_plugin.add_metric( label='Uptime',       value=results['Uptime'], uom='c', )
+my_plugin.add_metric( label='ReqPerSec',    value=results['ReqPerSec'], )
+my_plugin.add_metric( label='BytesPerSec',  value=results['BytesPerSec'], uom='b', )
+my_plugin.add_metric( label='BytesPerReq',  value=results['BytesPerReq'], uom='b', )
+my_plugin.add_metric( label='BusyWorkers',  value=results['BusyWorkers'],  )
+my_plugin.add_metric( label='IdleWorkers',  value=results['IdleWorkers'],  )
+my_plugin.add_metric( label='ResponseTime', value=results['ResponseTime'], uom='s',warn=my_plugin.options.warning, crit=my_plugin.options.critical )
+my_plugin.add_metric( label='Open slots',   value=results['OpenSlots'] )
+
+# By default assume everything is ok. Any thresholds specified with --threshold can overwrite this status:
+my_plugin.status(ok)
+
+# Here all metrics will be checked against thresholds that are either
+# built-in or added via --threshold from the command-line
+my_plugin.check_all_metrics()
+
+# Print out plugin information and exit nagios-style
+my_plugin.exit()
+
+
+

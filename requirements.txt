@@ -11,4 +11,4 @@ pylint
 pyflakes
 flakeplus
 argparse
-pynagios
+pynag
