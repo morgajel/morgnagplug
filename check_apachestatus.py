@@ -5,90 +5,77 @@
 # Inspired by De Bodt Lieven's perl implementation
 # 20140428 <morgajel at gmail dot com> v1.6
 #          rewriting in python
-#
+
+from pynag.Plugins import PluginHelper,ok,warning,critical,unknown
 import urllib2
 import re
 import sys
 import time
-import pynagios
-from pynagios import Plugin, Response, make_option, Range
+
+# Create an instance of PluginHelper()
+my_plugin = PluginHelper()
+
+# Add all of our wonderful flags
+my_plugin.parser.add_option('-H', '--hostname', type="string",      default="127.0.0.1",    dest="hostname" )
+my_plugin.parser.add_option('-p', '--port',     type="int",         default="80",           dest="port" )
+my_plugin.parser.add_option('-s', '--ssl',      help="enable ssl",  action="store_true",    dest="ssl" )  
+my_plugin.parser.add_option('-w', '--warning',  type="string",      default="5",            dest="warning" )
+my_plugin.parser.add_option('-c', '--critical', type="string",      default="10",           dest="critical" )
+my_plugin.parse_arguments()
+
+
+# Set the proper protocol
+if my_plugin.options.ssl:
+    my_plugin.options.protocol='https'
+else:
+    my_plugin.options.protocol='http'
+
+
+# Try to download the serverstatus page and do some basic data munging.
+try:
+    start = time.time()
+    website = urllib2.urlopen('%s://%s:%i/server-status?auto' % 
+                  (my_plugin.options.protocol,my_plugin.options.hostname,my_plugin.options.port), None,my_plugin.options.timeout )
+    content= website.read().strip()
+    # Split each parameter into a dict
+    results = dict(re.split(':\s*', line) for line in content.split('\n'))
+    results['OpenSlots']= results['Scoreboard'].count('.')
+    results['ResponseTime']="{0:.4f}".format(time.time() - start)
+
+# Catch any Errors
+except urllib2.HTTPError, e:
+    my_plugin.exit(summary="Cannot retrieve URL: HTTP Error Code %s" % e.code, long_output=str(e), exit_code=unknown)
+except urllib2.URLError, e:
+    my_plugin.exit(summary="Cannot retrieve URL: Perhaps a bad protocol (ssl not supported)?" , long_output=str(e), exit_code=unknown)
+except Exception, e:
+    my_plugin.exit(summary="Something horrible happened:", long_output=str(e), exit_code=unknown, perfdata='')
+
+
+# Lets Parse the data:
+my_plugin.add_summary( "%s seconds response time" % results['ResponseTime'])
+
+# and add metrics:
+my_plugin.add_metric( label='Total Accesses', value=results['Total Accesses'], uom='c', )
+my_plugin.add_metric( label='Total kBytes', value=results['Total kBytes'], uom='kb', )
+my_plugin.add_metric( label='CPULoad',      value=float(results['CPULoad'])*100, uom='%', )
+my_plugin.add_metric( label='Uptime',       value=results['Uptime'], uom='c', )
+my_plugin.add_metric( label='ReqPerSec',    value=results['ReqPerSec'], )
+my_plugin.add_metric( label='BytesPerSec',  value=results['BytesPerSec'], uom='b', )
+my_plugin.add_metric( label='BytesPerReq',  value=results['BytesPerReq'], uom='b', )
+my_plugin.add_metric( label='BusyWorkers',  value=results['BusyWorkers'],  )
+my_plugin.add_metric( label='IdleWorkers',  value=results['IdleWorkers'],  )
+my_plugin.add_metric( label='ResponseTime', value=results['ResponseTime'], uom='s',warn=my_plugin.options.warning, crit=my_plugin.options.critical )
+my_plugin.add_metric( label='Open slots',   value=results['OpenSlots'] )
+
+# By default assume everything is ok. Any thresholds specified with --threshold can overwrite this status:
+my_plugin.status(ok)
+
+# Here all metrics will be checked against thresholds that are either
+# built-in or added via --threshold from the command-line
+my_plugin.check_all_metrics()
+
+# Print out plugin information and exit nagios-style
+my_plugin.exit()
 
 
 
-class MyCheck(Plugin):
-    """The Guts of the check"""
-
-    # The basic options are covered by Plugin, but we need these as well.
-    ssl  = make_option("--ssl",         action="store_true", help="use https")
-    port = make_option("-p", "--port",      type="int", default="80" )
-
-
-
-    def set_default_options(self):
-        """ Manually setting these to work around bad defaults in pynagios.Plugin"""
-        if self.options.timeout == 0:
-            self.options.timeout=None
-#        if self.options.warning == None:
-#            self.options.warning=Range('0:10')
-#        if self.options.critical == None:
-#            self.options.critical=Range('0:20')
-        if self.options.ssl:
-            self.options.protocol='https'
-        else:
-            self.options.protocol='http'
-
-
-
-    def check(self):
-        """ Acquire data for parsing"""
-        try:
-            self.set_default_options()
-            start = time.time()
-            website = urllib2.urlopen('%s://%s:%i/server-status?auto' % 
-                        (self.options.protocol ,self.options.hostname, self.options.port), None, self.options.timeout )
-            results=self.parse_content( website.read().strip() )
-            time.sleep(2)
-            results['ResponseTime']="{0:.4f}".format(time.time() - start)
-        except urllib2.HTTPError, e:
-            return Response(pynagios.UNKNOWN, "Cannot retrieve URL: HTTP Error Code %s" % e.code )
-        except urllib2.URLError, e:
-            return Response(pynagios.UNKNOWN, "Cannot retrieve URL: " + e.reason[1])
-
-        return self.response_for_value(results)
-
-
-
-    def parse_content(self, content):
-        """ Take the returned scoreboard text and parse it into a dict. """
-        results = dict(re.split(':\s*', line) for line in content.split('\n'))
-        results['OpenSlots']= results['Scoreboard'].count('.')
-        return results
-
-
-
-    def response_for_value(self, results):
-        """ Determine the proper response from the results. """
-        if self.options.critical is not None and self.options.critical.in_range(results['ResponseTime']):
-            response=Response(pynagios.CRITICAL, "Response time %s greater than critical %s" % (results['ResponseTime'], self.options.critical))
-        else:
-            response=Response(pynagios.OK, "%s seconds response time" % results['ResponseTime'])
-
-        
-#        response.set_perf_data('Total Accesses', results['Total Accesses'], uom='c', )
-#        response.set_perf_data('Total kBytes', results['Total kBytes'], uom='kb', )
-#        response.set_perf_data('CPULoad', float(results['CPULoad'])*100, uom='%', )
-#        response.set_perf_data('Uptime', results['Uptime'], uom='c', )
-#        response.set_perf_data('ReqPerSec', results['ReqPerSec'], )
-#        response.set_perf_data('BytesPerSec', results['BytesPerSec'], uom='b', )
-#        response.set_perf_data('BytesPerReq', results['BytesPerReq'], uom='b', )
-#        response.set_perf_data('BusyWorkers', results['BusyWorkers'],  )
-#        response.set_perf_data('IdleWorkers', results['IdleWorkers'],  )
-        response.set_perf_data('ResponseTime', results['ResponseTime'], uom='s',warn=self.options.warning, crit=self.options.critical )
-        response.set_perf_data('Open slots', results['OpenSlots'] )
-
-        return response
-
-
-if __name__ == "__main__":
-    # Instantiate the plugin, check it, and then exit
-    MyCheck().check().exit()
