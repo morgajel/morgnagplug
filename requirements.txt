@@ -11,6 +11,6 @@ pylint
 pyflakes
 flakeplus
 argparse
-nagiosplugin
 sqlalchemy
 pymysql
+pynag
