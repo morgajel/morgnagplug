@@ -14,3 +14,6 @@ argparse
 sqlalchemy
 pymysql
 pynag
+
+# Note this requires the freeTDS devel packages to build :/
+#pymssql
