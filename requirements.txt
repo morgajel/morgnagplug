@@ -12,3 +12,5 @@ pyflakes
 flakeplus
 argparse
 pynag
+lxml
+cssselect
