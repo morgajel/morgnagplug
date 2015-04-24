@@ -64,6 +64,9 @@ my $MIBDescription="sysDescr.0";
 #my $MIBifLastChange="IF-MIB::ifLastChange";
 my $MIBTrafficIn="IF-MIB::ifInOctets";
 my $MIBTrafficOut="IF-MIB::ifOutOctets";
+my $MIBTrafficInErr="IF-MIB::ifInErrors";
+my $MIBTrafficOutErr="IF-MIB::ifOutErrors";
+
 #my $MIBDescription="IF-MIB::ifAlias";
 
 ###################Getting options##############################
@@ -143,6 +146,8 @@ if ($mode eq "d") {
     my $walkIp = snmpwalkgrep2($host, $community, $MIBipAdEntIfIndex, $interface);
     my $trafficin  = snmpwalkgrep3($host, $community, $MIBTrafficIn,  $interface);
     my $trafficout = snmpwalkgrep3($host, $community, $MIBTrafficOut, $interface);
+    my $errorin  = snmpwalkgrep3($host, $community, $MIBTrafficInErr,  $interface);
+    my $errorout = snmpwalkgrep3($host, $community, $MIBTrafficOutErr, $interface);
 
 
     # Bestimmen wo das '=' im String steht
@@ -184,7 +189,7 @@ if ($mode eq "d") {
 
     my $output ="Interface $IFName with IP $IP MASK $IPMask MTU $IPMtu is $IFStatus";
 
-    $output.= " | status=$ifstat InOctets=".$trafficin."c OutOctets=".$trafficout."c";
+    $output.= " | status=$ifstat InOctets=".$trafficin."c OutOctets=".$trafficout."c InErrors=".$errorin."c OutErrors=".$errorout."c";
     # my $change = snmpget($host, $community, "$MIBifLastChange.$interface");
 
 
