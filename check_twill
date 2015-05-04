@@ -1,12 +1,13 @@
 #!/usr/bin/python
 #
-# check_twill a nagios check plugin for stepping through a website
+# check_twill a monitoring plugin for stepping through a website
 #
-# Copyright (C) 2009 Jesse Morgan, Michael Isiminger, Duncan McGreggor
+# check_twill Copyright (C) 2015
+# BASED ON  check_twill, Copyright 2009 Jesse Morgan, Michael Isiminger
 # BASED ON: check_twill, Copyright 2006 Duncan McGreggor
 #
 # check_twill
-# This file is part of morgnagplug
+# This file is part of the morgnagplug package.
 # 
 # 
 # The MIT License
@@ -29,115 +30,33 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+prog_version = "1.3"
 
-# TODO: complete from-scratch rewrite.
-
-
-prog = "check_twill"
-prog_version = "1.2"
-
-import os
-import sys
 import cmd
-import getopt
+
+import argparse
+import sys, os
+
+import logging
+_log = logging.getLogger('nagiosplugin')
+
 from datetime import datetime
-from twill import commands, parse, __version__, namespaces, TwillCommandLoop, execute_file
+import nagiosplugin
+from twill import commands, parse, __version__, namespaces, TwillCommandLoop, set_output, set_errout
 from twill.errors import TwillAssertionError, TwillNameError
-from optparse import OptionParser
+# This plugin has three parts:
+# - Resource Collection
+# - Context Comparison
+# - Summarization
 from cStringIO import StringIO
 
 
-# Standard usage prompts and checks
-# The name of this script may change so lets make sure the usage makes sense
-
-script = os.path.basename(sys.argv[0])
 
 
-def usage():
-    print '%s %s (twill version %s)' % ( prog, prog_version, __version__, )
-    print ''
-    print 'This plugin executes a twill script and returns results for Nagios.'
-    print 'It is designed to be a simple method to funtionally test websites.'
-    print ''
-    print '(see http://twill.idyll.org for more info on writing twill scripts)' 
-    print ''
-    print 'Usage: %s [-f|-v] <path_to_twill_script>' % script
-    print ''
-    print 'Options:'
-    print ' -h, --help'
-    print '    Print detailed help screen'
-    print ' -V, --version'
-    print '    Print version information'
-    print ' -f, --file'
-    print '    Path to twill script'
-    # This is actually to negate the -q flag of twill
-    print ' -v, --verbose'
-    print '    Shows details for command-line debugging (Nagios may truncate)'
-    print ''
-    print 'Examples:'
-    print ' $ %s -f /tmp/success.tw' % prog
-    print ' PAGE CHECK OK - All tests passed successfully  |available=1 totalTime=0.308099'
-    print ''
-    print ' $ %s -f /tmp/failure.tw' % prog
-    print ' PAGE CHECK CRITICAL - Failed on [code is 404 != 200 ] on line 2 at \\'
-    print '  http://foo.example.com |available=0 totalTime=0.784899'
-    print ''
-    sys.exit(3)
 
-try:
-    options, args = getopt.getopt(sys.argv[1:],
-        "hVvf:",
-        ["help", "version", "verbose", "file="],
-        )
 
-except getopt.GetoptError, err:
-    print ''
-    print str(err) 
-    print ''
-    usage()
-    sys.exit(3)
 
-# I don't want options to be passed to main() because it outputs from twill
-# So, I'll do some ugly hacks. 
 
-number_of_options = len(sys.argv)
-
-if number_of_options < 2:
-    print ''
-    print 'Sorry, %s requires 1 option' % script
-    print '' 
-    usage()
-    sys.exit(3)
-
-if number_of_options > 3:
-    print ''
-    print 'Sorry, %s can only use 1 option' % script
-    print ''
-    usage()
-    sys.exit(3)
-
-for name, value in options:
-    if name in ("-h", "--help"):
-       usage()
-    if name in ("-V", "--version"):
-       print '%s %s (twill version %s)' % ( prog, prog_version, __version__, )
-       sys.exit(0)
-    if name in ("-v", "--verbose"):
-       if number_of_options < 3:
-           usage ()
-           sys.exit(3)
-       else:
-           sys.argv[1] = "-n" # I want the -v to be verbose for the plugin not twill's version
-    if name in ("-f", "--file"):
-       if number_of_options < 3:
-           usage ()
-           sys.exit(3)
-       else:
-           sys.argv[1] = "-q" # I want twill's "quiet" flag to be the default for a Plugin
-    
-        
-
-# Nagios expects the following response codes 
 
 NAGIOS_OK = 0
 NAGIOS_WARN = 1
@@ -155,9 +74,11 @@ def _execute_script(inp, **kw):
 
     # sourceinfo stuff
     sourceinfo = kw.get('source', "<input>")
-   
+    # should we catch exceptions on failure?
+    catch_errors = False
+    if kw.get('never_fail'):
+        catch_errors = True
     try:
-
         n = 0
         cmdlist = []
         target=''
@@ -189,365 +110,102 @@ def _execute_script(inp, **kw):
                 global error_msg 
                 error_msg = "[%s] on line %s of %s at %s " %(e,n,sourceinfo,target) 
                 if not catch_errors:
-                    raise
+                    #raise
+                    raise TwillAssertionError(error_msg)
 
     finally:
         namespaces.pop_local_dict()
 
 parse._execute_script = _execute_script
 
-try:
-    import readline
-except:
-    readline = None
 
-def make_cmd_fn(cmd):
+
+class TwillResource(nagiosplugin.Resource):
+    """ This is where all of the heavy lifting happens.
     """
-    Dynamically define a twill shell command function based on an imported
-    function name.  (This is where the twill.commands functions actually
-    get executed.)
-    """
-    
-    def do_cmd(rest_of_line, cmd=cmd):
-        global_dict, local_dict = namespaces.get_twill_glocals()
 
-        args = []
-        if rest_of_line.strip() != "":
-            try:
-                args = parse.arguments.parseString(rest_of_line)[0]
-                args = parse.process_args(args, global_dict,local_dict)
-            except Exception, e:
-                print '\nINPUT ERROR: %s\n' % (str(e),)
-                return
+    def __init__(self,args):
+        """ passing in args like this is ugly, but it works for testing.
+        """
+        self.args = args
 
+    def probe(self):
+        startTime = datetime.now()
+        errormessage=StringIO()
+        output=StringIO()
         try:
-            parse.execute_command(cmd, args, global_dict, local_dict,
-                                  "<shell>")
-        except SystemExit:
-            raise
-        except Exception, e:
-            print '\nERROR: %s\n' % (str(e),)
-
-    return do_cmd
-
-def make_help_cmd(cmd, docstring):
-    """
-    Dynamically define a twill shell help function for the given
-    command/docstring.
-    """
-    def help_cmd(message=docstring, cmd=cmd):
-        print '=' * 15
-        print '\nHelp for command %s:\n' % (cmd,)
-        print message.strip()
-        print ''
-        print '=' * 15
-        print ''
-        
-    return help_cmd
-
-###
-
-class Singleton(object):
-    def __new__(cls, *args, **kwds):
-        it = cls.__dict__.get("__it__")
-        if it is not None:
-            return it
-        cls.__it__ = it = object.__new__(cls)
-        it.init(*args, **kwds)
-        return it
-    
-    def init(self, *args, **kwds):
-        pass
-
-#
-# TwillCommandLoop
-#
-
-def add_command(cmd, docstring):
-    x = get_command_shell()
-    if x:
-        x.add_command(cmd, docstring)
-        
-def get_command_shell():
-    return getattr(TwillCommandLoop, '__it__', None)
-
-class TwillCommandLoop(Singleton, cmd.Cmd):
-    """
-    Command-line interpreter for twill commands.  Singleton object: you
-    can't create more than one of these at a time.
-
-    Note: most of the do_ and help_ functions are dynamically created
-    by the metaclass.
-    """
-    def init(self, **kw):
-        if kw.has_key('stdin'):
-            cmd.Cmd.__init__(self, None, stdin=kw['stdin'])
-            self.use_rawinput = False
-        else:
-            cmd.Cmd.__init__(self)
-
-        # initialize a new local namespace.
-        namespaces.new_local_dict()
-
-        # import readline history, if available.
-        if readline:
-            try:
-                readline.read_history_file('.twill-history')
-            except IOError:
-                pass
-
-        # fail on unknown commands? for test-shell, primarily.
-        self.fail_on_unknown = kw.get('fail_on_unknown', False)
-
-        # handle initial URL argument
-        if kw.get('initial_url'):
-            commands.go(kw['initial_url'])
+            if not self.args.debug:
+                set_output(output)
+                set_errout(errormessage)
+            # Call twill.parser's execute file, which *should* call our _execute_file above.
+            parse.execute_file(self.args.script, never_fail=self.args.never_fail)
+            # Return outputs to normal
+            set_output(None)
+            set_errout(None)
+        except nagiosplugin.error.Timeout, e :
+            raise nagiosplugin.CheckError("Script didn't finish in time: {0}".format(e))
+        except TwillAssertionError,e:
+            raise nagiosplugin.CheckError("Assertion Failure: {0}".format(e))
             
-        self._set_prompt()
-
-        self.names = []
-        
-        global_dict, local_dict = namespaces.get_twill_glocals()
-
-        ### add all of the commands from twill.
-        for command in parse.command_list:
-            fn = global_dict.get(command)
-            self.add_command(command, fn.__doc__)
-
-    def add_command(self, command, docstring):
-        """
-        Add the given command into the lexicon of all commands.
-        """
-        do_name = 'do_%s' % (command,)
-        do_cmd = make_cmd_fn(command)
-        setattr(self, do_name, do_cmd)
-
-        if docstring:
-            help_cmd = make_help_cmd(command, docstring)
-            help_name = 'help_%s' % (command,)
-            setattr(self, help_name, help_cmd)
-
-        self.names.append(do_name)
-
-    def get_names(self):
-        """
-        Return the list of commands.
-        """
-        return self.names
-
-    def _set_prompt(self):
-        "Set the prompt to the current page."
-        url = commands.browser.get_url()
-        if url is None:
-            url = " *empty page* "
-        self.prompt = "current page: %s\n>> " % (url,)
-
-    def precmd(self, line):
-        "Run before each command; save."
-        return line
-
-    def postcmd(self, stop, line):
-        "Run after each command; set prompt."
-        self._set_prompt()
-        
-        return stop
-
-    def default(self, line):
-        "Called when unknown command is executed."
-
-        # empty lines ==> emptyline(); here we just want to remove
-        # leading whitespace.
-        line = line.strip()
-
-        # look for command
-        global_dict, local_dict = namespaces.get_twill_glocals()
-        cmd, args = parse.parse_command(line, global_dict, local_dict)
-
-        # ignore comments & empty stuff
-        if cmd is None:
-            return
-
-        try:
-            parse.execute_command(cmd, args, global_dict, local_dict,
-                                  "<shell>")
-        except SystemExit:
-            raise
         except Exception, e:
-            print '\nERROR: %s\n' % (str(e),)
-            if self.fail_on_unknown:
-                raise
+            errormessage=str(e)
+            print e.__class__
+            raise nagiosplugin.CheckError("UnknownException: {0}".format(e))
 
-    def emptyline(self):
-        "Ignore empty lines."
-        pass
+        endTime = datetime.now()
+        delta = endTime - startTime
+        totalTime = delta.seconds + delta.microseconds/1000000.0
+        yield nagiosplugin.Metric('totaltime', totalTime, uom='s' )
 
-    def do_EOF(self, *args):
-        "Exit on CTRL-D"
-        if readline:
-            readline.write_history_file('.twill-history')
-            
-        raise SystemExit()
 
-    def help_help(self):
-        print "\nWhat do YOU think the command 'help' does?!?\n"
+class TwillContext(nagiosplugin.ScalarContext):
+    """ This is just a wrapper for consistency
+    """
 
-    def do_version(self, *args):
-        print "\ntwill version %s.\n" % (__version__,)
-        print "See http://www.idyll.org/~t/www-tools/twill/ for more info."
-        print ""
 
-    def help_version(self):
-        print "\nPrint version information.\n"
 
-    def do_exit(self, *args):
-        raise SystemExit()
+class TwillSummary(nagiosplugin.Summary):
+    """ Take the results (in context) and summarize them into a text message
+    """
 
-    def help_exit(self):
-        print "\nExit twill.\n"
+    def ok(self, results):
+        return 'All Steps Completed Successfully. Total Runtime: %s' % str(results['totaltime'])
 
-    do_quit = do_exit
-    help_quit = help_exit
+    def problem(self, results):
+        if results[0].hint =="Assertion Failure":
+            self.state='CRITICAL'
+        return results[0].hint
 
-####
+class TwillCheck(nagiosplugin.Check):
+    """ This is just a wrapper for consistency
+    """
 
-twillargs = []                          # contains sys.argv *after* last '--'
-interactive = False                     # 'True' if interacting with user
+
+@nagiosplugin.guarded
 def main():
-    global twillargs, interactive
-    
-    old_stdout = None
-    startTime = datetime.now()
-    ###
-    # make sure that the current working directory is in the path.  does this
-    # work on Windows??
+    helptext="""
+        check_twill is a nagios-compatible monitoring plugin that is designed to be a 
+        simple method to funtionally test websites. Please see http://twill.idyll.org 
+        for details on the twill language syntax.
+        """
 
-    if not '.' in sys.path:
-        sys.path.append('.')
-    ###
+    parser = argparse.ArgumentParser(description=helptext, version=prog_version)
 
-    #### OPTIONS
+    parser.add_argument('-d', '--debug', action="store_true", default=False, help="Shows details for command-line debugging (may be truncated by monitoring software)'")
+    parser.add_argument('-w', '--warn', action="store", default=0.0, help="How long (in seconds) to wait for a response before Warning")
+    parser.add_argument('-c', '--crit', action="store", default=0.0, help="How long (in seconds) to wait for a response before going Critical")
+    parser.add_argument('-t', '--timeout', action="store", default=30, help="How long to wait before timing out (default 30 seconds)")
+    parser.add_argument('-n', '--never-fail', action="store_true", default=False, help="Continue on even if there are failures.")
+    parser.add_argument("script")
+    args = parser.parse_args()
 
-    parser = OptionParser()
+    check = TwillCheck(
+                TwillResource(args),
+                TwillContext('totaltime',warning=args.warn, critical=args.crit, fmt_metric='{value} seconds'),
+                TwillSummary())
+    check.name='Twill Check'
+    check.main(timeout=args.timeout)
 
-    parser.add_option('-q', '--quiet', action="store_true", dest="quiet",
-                      help = 'do not show normal output')
 
-    parser.add_option('-i', '--interactive', action="store_true", dest="interact",
-              help = 'drop into an interactive shell after running files (if any)')
-
-    parser.add_option('-f', '--fail', action="store_true", dest="fail",
-                      help = 'fail exit on first file to fail')
-
-    parser.add_option('-n', '--never-fail', action="store_true",
-                      dest="never_fail",
-                      help = 'continue executing scripts past errors')
-
-    parser.add_option('-v', '--version', action="store_true", dest="show_version",
-                      help = 'show version information and exit')
-
-    parser.add_option('-u', '--url', nargs=1, action="store", dest="url",
-                      help="start at the given URL before each script")
-
-    ####
-
-    # parse arguments.
-    sysargs = sys.argv[1:]
-    if '--' in sysargs:
-        found = False
-        for last in range(len(sysargs) - 1, -1, -1):
-            if sysargs[last] == '--':
-                found = True
-                break
-
-        if found:
-            twillargs = sysargs[last + 1:]
-            sysargs = sysargs[:last]
-
-    (options, args) = parser.parse_args(sysargs)
-
-    if options.show_version:
-        print 'twill version %s.' % (__version__,)
-        sys.exit(0)
-
-    if options.quiet:
-        assert not options.interact, "interactive mode is incompatible with -q"
-        assert args, "interactive mode is incompatible with -q"
-
-        old_stdout = sys.stdout
-        sys.stdout = StringIO()
-     
-    # If run from the command line, find & run any scripts put on the command
-    # line.  If none, drop into an interactive AutoShell.
-
-    failed = False
-    if len(args):
-        success = []
-        failure = []
-        for filename in args:
-            if filename[-1] == '~':
-                continue
-            try:
-                interactive = False
-                execute_file(filename,
-                             initial_url=options.url,
-                             never_fail=options.never_fail)
-                success.append(filename)
-            except Exception, e:
-                if options.fail:
-                    raise
-                else:
-                    failure.append(str(e))
-        if len(failure):
-            failed = failure.pop()
-
-    if not args or options.interact:
-        interactive = True
-        shell = TwillCommandLoop(initial_url=options.url)
-
-        while 1:
-            try:
-                shell.cmdloop('')
-            except KeyboardInterrupt:
-                sys.stdout.write('\n')
-            except SystemExit:
-                raise
-
-            welcome_msg = ""
-    endTime = datetime.now()
-    delta = endTime - startTime
-    totalTime = "%f" % (delta.seconds + delta.microseconds/1000000.)
-    if old_stdout:
-        output = sys.stdout
-        sys.stdout = old_stdout
-        output.seek(0)
-        output = output.read()
-    else:
-        output = ''
-    # Check output for data points to output.  This only works if run with
-    # -q so we can capture the output
-    datapoints = {}
-    for line in output.split('\n'):
-        if line.startswith('PAGE_CHECK_DATA:'):
-            try:
-                junk, key, value = line.split(':', 2)
-            except ValueError:
-                pass
-            else:
-                datapoints[key] = value
-    if failed:
-        msg = 'PAGE CHECK CRITICAL - Failed %s|available=0' % error_msg
-        result = NAGIOS_CRIT
-    else:
-        msg = 'PAGE CHECK OK - All tests passed successfully  |available=1'
-        result = NAGIOS_OK
-    msg += ' totalTime=%s' % totalTime
-    for key, value in datapoints.items():
-        key = key.replace(' ', '-')
-        value = value.replace(' ', '-')
-        msg += ' %s=%s' % (key, value)
-    sys.stdout.write(msg)
-    sys.stdout.write('\n')
-    sys.exit(result)
-
-main()
-
+if __name__ == '__main__':
+    main()
