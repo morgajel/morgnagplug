@@ -1,212 +1,223 @@
 #!/usr/bin/python
-#
-# check_twill a monitoring plugin for stepping through a website
-#
-# check_twill Copyright (C) 2015
-# BASED ON  check_twill, Copyright 2009 Jesse Morgan, Michael Isiminger
-# BASED ON: check_twill, Copyright 2006 Duncan McGreggor
-#
-# check_twill
-# This file is part of the morgnagplug package.
-# 
-# 
-# The MIT License
-# 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-# 
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-# 
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
-#
-# NOTE: you can get install all of the requirements via
-#     pip install twill==0.9.1
+"""
+check_twill a monitoring plugin for stepping through a website
 
-prog_version = "1.4"
+check_twill Copyright (C) 2015
+BASED ON: check_twill, Copyright 2009 Jesse Morgan, Michael Isiminger
+BASED ON: check_twill, Copyright 2006 Duncan McGreggor
+
+check_twill
+This file is part of the morgnagplug package.
+
+The MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+NOTE: you can get install all of the requirements via
+    pip install twill==0.9.1
+"""
+
+PROG_VERSION = "1.4"
+NAGIOS_STATE = {'OK':0, 'WARNING':1, 'CRITICAL':2, 'UNKNOWN':3}
 
 import argparse
-import cmd
 from cStringIO import StringIO
 from datetime import datetime
-import os
 import signal
 import sys
-from twill import commands, parse, __version__, namespaces, TwillCommandLoop, set_output, set_errout
-from twill.errors import TwillAssertionError, TwillNameError
+from twill import commands, parse, __version__, namespaces, set_output, set_errout
+from twill.errors import TwillAssertionError
 
-helptext="""
-    check_twill is a nagios-compatible monitoring plugin that is designed to be a 
-    simple method to funtionally test websites. Please see http://twill.idyll.org 
-    for details on the twill language syntax.
-    """
+def configure_parser():
+    """ This configures all of the arguments available. """
 
-parser = argparse.ArgumentParser(description=helptext, version=prog_version)
+    help_text = """
+        check_twill is a nagios-compatible monitoring plugin that is designed to be a
+        simple method to funtionally test websites. Please see http://twill.idyll.org
+        for details on the twill language syntax.
+        """
+    parser = argparse.ArgumentParser(description=help_text, version=PROG_VERSION)
 
-parser.add_argument('-d', '--debug', action="store_true", default=False, help="Shows details for command-line debugging (may be truncated by monitoring software)'")
-parser.add_argument('-w', '--warn', action="store", type=float, help="How long (in seconds) to wait before setting the state to WARNING")
-parser.add_argument('-c', '--crit', action="store", type=float, help="How long (in seconds) to wait before setting the state to CRITICAL")
-parser.add_argument('-t', '--timeout', action="store", type=int, default=30, help="How long (in seconds) to wait for a response before timing out")
-parser.add_argument('--timeout-state', action="store",  choices=['OK', 'WARNING', 'CRITICAL', 'UNKNOWN'], default='UNKNOWN', help="What state to use should it timeout: OK, WARNING, CRITICAL, or UNKNOWN(default)")
-parser.add_argument('-n', '--never-fail', action="store_true", default=False, help="Continue on even if there are failures.")
-parser.add_argument("script")
+    parser.add_argument('-d', '--debug', action="store_true", default=False,
+                        help="Shows details for command-line debugging (may be truncated by monitoring software)'")
+    parser.add_argument('-w', '--warn', action="store", type=float,
+                        help="How long (in seconds) to wait before setting the state to WARNING")
+    parser.add_argument('-c', '--crit', action="store", type=float,
+                        help="How long (in seconds) to wait before setting the state to CRITICAL")
+    parser.add_argument('-t', '--timeout', action="store", type=int, default=30,
+                        help="How long (in seconds) to wait for a response before timing out")
+    parser.add_argument('--timeout-state', action="store", default='UNKNOWN', choices=NAGIOS_STATE.keys(),
+                        help="What state to use should it timeout: OK, WARNING, CRITICAL, or UNKNOWN(default)")
+    parser.add_argument('-n', '--never-fail', action="store_true", default=False,
+                        help="Continue on even if there are failures.")
+    parser.add_argument("script")
 
-global args
-args = parser.parse_args()
-
-
-global nagiosState
-nagiosState={'OK':0, 'WARNING':1, 'CRITICAL':2, 'UNKNOWN':3}
-
-
-
+    return parser.parse_args()
 
 
-class Timeout(Exception):
+class TimeoutError(Exception):
     """ This class is used to differentiate when the script Times out."""
     pass
 
 def timeout_signal(signum, stack):
     """ The Timeout will only be raised if the script takes too long. """
-    raise Timeout("TWILL {0}: Script timed out after {1} second(s)".format(args.timeout_state,args.timeout))
+    raise TimeoutError()
 
 
-def perfdata(timetotal):
-    """ 
+def perfdata(args, timetotal):
+    """
     Performance data consists of the following format:
         | 'label'=value[UOM];[warn];[crit];[min];[max]
     By default we leave warnings and criticals empty, the min at 0, and the max at the timeout value.
     """
     if args.warn == None:
-        args.warn=''
+        args.warn = ''
     if args.crit == None:
-        args.crit=''
-    return "|'time'={0} seconds;{1};{2};0;{3}".format(timetotal, args.warn, args.crit, args.timeout)
-
-
+        args.crit = ''
+    return "|'time'={0}s;{1};{2};0;{3}".format(timetotal, args.warn, args.crit, args.timeout)
 
 def _execute_script(inp, **kw):
     """
-    This method is cloned from twill's parse library to add more error details.
+    This method is cloned from twill's parse library to add
+    more error details and remove useless output.
     """
     # initialize new local dictionary & get global + current local
     namespaces.new_local_dict()
     globals_dict, locals_dict = namespaces.get_twill_glocals()
 
-    # sourceinfo stuff
-    sourceinfo = kw.get('source', "<input>")
+    locals_dict['__url__'] = commands.browser.get_url()
+
+    # reset browser
+    if not kw.get('no_reset'):
+        commands.reset_browser()
+
+    # go to a specific URL?
+    init_url = kw.get('initial_url')
+    if init_url:
+        commands.go(init_url)
+        locals_dict['__url__'] = commands.browser.get_url()
+
     # should we catch exceptions on failure?
     catch_errors = False
     if kw.get('never_fail'):
         catch_errors = True
+
+    # sourceinfo stuff
+    sourceinfo = kw.get('source', "<input>")
     try:
-        n = 0
-        cmdlist = []
-        target=''
-        for line in inp:
-            n += 1
-            if not line.strip():            # skip empty lines
+        current_url = ''
+        for n, line in enumerate(inp):
+            if not line.strip(): # skip empty lines
                 continue
-     
+
+            cmdinfo = "%s:%d" % (sourceinfo, n)
+
             cmd, args = parse.parse_command(line, globals_dict, locals_dict)
             if cmd is None:
-                continue 
-
-            cmdinfo = "%s:%d" % (sourceinfo, n,)
-
+                continue
             try:
-                cmdlist.append( '%s: %s %s' %(n,cmd,''.join( args)))
-                result= parse.execute_command(cmd, args, globals_dict, locals_dict, cmdinfo)
+                result = parse.execute_command(cmd, args, globals_dict, locals_dict, cmdinfo)
                 if result is not None:
-                    target= result
-            except SystemExit:
-                # abort script execution, if a SystemExit is raised.
-                return
-            except Timeout, e:
-                # Feed the timeout all the way up.
-                raise e;
-            except Exception, e:
-                # catching ALL exceptions, not just Twill exceptions because a connection 
-                #  refused would break the script
-                # I feel dirty about using a global here but I haven't figured out a better way
-                #  yet
-                global error_msg 
-                error_msg = "[%s] on line %s of %s at %s " %(e,n,sourceinfo,target) 
+                    current_url = result
+            except TimeoutError, exc:
+                # Catch and rethrow my signal timeout around the catchall below so it can be processed.
+                raise exc
+            except Exception, exc:
+                # catching ALL exceptions, not just Twill exceptions because a connection
+                # refused would break the script
+                error_msg = "[%s] on line %s of %s at %s " %(exc, n, sourceinfo, current_url)
                 if not catch_errors:
                     raise TwillAssertionError(error_msg)
     finally:
         namespaces.pop_local_dict()
 
+# This allows us to replace the original _execute_script with our own.
+# We do this to get around the invalid output.
 parse._execute_script = _execute_script
 
-def main_check():
 
-    startTime = datetime.now()
-    errormessage=StringIO()
-    output=StringIO()
+def main():
+    """
+        This is the core check of the script. It executes the file,
+        catches exceptions, and parses the output.
+    """
+    args = configure_parser()
+
+    # these two StringIO allow us to buffer output for display after
+    # our status line (if we have debug mode enabled)
+    errormessage = StringIO()
+    output = StringIO()
+
     try:
+        # Set up our timeout signalling
         signal.signal(signal.SIGALRM, timeout_signal)
         signal.alarm(args.timeout)
+
+        # Let's set our outputs to the side...
         set_output(output)
         set_errout(errormessage)
 
         # Call twill.parser's execute file, which *should* call our _execute_file above.
+        start_time = datetime.now()
         parse.execute_file(args.script, never_fail=args.never_fail)
+        end_time = datetime.now()
 
-        # Return outputs to normal
+        # ... And then return outputs to normal
         set_output(None)
         set_errout(None)
-    except Timeout,e:
-        endTime = datetime.now()
-        delta = endTime - startTime
-        timetotal = delta.seconds + delta.microseconds/1000000.0
-        print str(e) + perfdata(timetotal)
+
+        # Using our start_time and end_time, we can calculate the
+        # delta to figure out how long it actually took.
+        delta = end_time - start_time
+        total_time = delta.seconds + delta.microseconds/1000000.0
+
+        if args.crit != None and total_time > args.crit:
+            message = "All steps completed successfully, but not in time."
+            state = 'CRITICAL'
+        elif args.warn != None and total_time > args.warn:
+            message = "All steps completed successfully, but not in time."
+            state = 'WARNING'
+        else:
+            message = "All steps completed successfully."
+            state = 'OK'
+        message += " Total Runtime: {0}s ".format(total_time) + perfdata(args, total_time)
+
+    except TimeoutError, exc:
+        # If our Signal alarm is triggered for taking too long, this will be executed.
+        end_time = datetime.now()
+        delta = end_time - start_time
+        total_time = delta.seconds + delta.microseconds/1000000.0
+        message = "Script timeout after {0}s".format(args.timeout) + perfdata(args, total_time)
+        state = args.timeout_state
+
+    except TwillAssertionError, exc:
+        message = "Assertion Failure: %s " % exc
+        state = 'CRITICAL'
+
+    except Exception, exc:
+        message = "Unknown exception: '%s'" % exc
+        state = 'UNKNOWN'
+
+    finally:
+        print "TWILL {0}: {1}".format(state, message)
         if args.debug:
             print output.getvalue()
-            print errormessage.getvalue()
-        return nagiosState[args.timeout_state];
-    except TwillAssertionError,e:
-        print "TWILL CRITICAL: Assertion Failure: %s " % e
-        if args.debug:
-            print output.getvalue()
-            print errormessage.getvalue()
-        return nagiosState['CRITICAL'];
-    except Exception, e:
-        print "TWILL UNKNOWN: %s " % e
-        if args.debug:
-            print output.getvalue()
-            print errormessage.getvalue()
-        return nagiosState['UNKNOWN'];
-
-    endTime = datetime.now()
-    delta = endTime - startTime
-    timetotal = delta.seconds + delta.microseconds/1000000.0
-    if args.crit != None and timetotal > args.crit:
-        print "TWILL CRITICAL: All steps completed successfully, but were too slow. Total Runtime: {0} ".format(timetotal) + perfdata(timetotal)
-        if not args.debug:
-            print output
-            print errormessage
-        return nagiosState['CRITICAL'];
-    if args.warn != None and timetotal > args.warn:
-        print "TWILL WARNING: All steps completed successfully, but were too slow. Total Runtime: {0} ".format(timetotal) + perfdata(timetotal)
-        if not args.debug:
-            print output
-            print errormessage
-        return nagiosState['WARNING'];
-
-
-    print "TWILL OK: All steps completed successfully. Total Runtime: {0} ".format(timetotal) + perfdata(timetotal)
-
-    return nagiosState['OK'];
-
-sys.exit(main_check())
+        print errormessage.getvalue()
+        sys.exit(NAGIOS_STATE[state])
+main()
