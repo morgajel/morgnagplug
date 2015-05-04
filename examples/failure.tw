@@ -1,0 +1,18 @@
+# This is an example script for check_twill
+
+# Setup Stuff
+reset_browser
+agent "TwillWalkthrough"
+
+
+# First Page
+go https://www.google.com
+# Ensure page is returning a 200 OK code ala http://en.wikipedia.org/wiki/Http_codes#2xx_Success
+code 200
+#Ensure that the proper login page is showing
+find "Rumpelstiltskin"
+
+
+go http://www.slashdot.org
+go http://www.fark.com
+go http://www.reddit.com

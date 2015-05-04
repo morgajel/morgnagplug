@@ -1,0 +1,16 @@
+# This is an example script for check_twill
+
+# Setup Stuff
+reset_browser
+agent "TwillWalkthrough"
+
+go http://www.google.com
+go http://www.slashdot.org
+go http://www.fark.com
+go http://www.reddit.com
+
+
+go http://www.google.com
+go http://www.slashdot.org
+go http://www.fark.com
+go http://www.reddit.com
