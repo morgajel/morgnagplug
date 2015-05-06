@@ -33,6 +33,7 @@ my $conf_file='/opt/morgnagplug/examples/check_wmi_plus.conf';
 
 # we are looking for the dir where utils.pm is located. This is normally installed as part of Nagios
 use lib "/usr/lib/nagios/plugins";
+use lib "/usr/lib64/nagios/plugins";
 
 # you shouldn't need to change anything else below this line
 # change the settings in the $conf_file itself
