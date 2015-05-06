@@ -29,7 +29,7 @@
 # eg $0 becomes /usr/sbin/p1.pl no matter where you install this script
 ## NOTE: If you created a sym link from the setting that comes in the release version to your real conf file, you'd never need to change this script when you get a new version
 # eg mkdir -p /opt/nagios/bin/plugins;ln -s MYCONF /opt/nagios/bin/plugins/check_wmi_plus.conf
-my $conf_file='/opt/nagios/bin/plugins/check_wmi_plus.conf';
+my $conf_file='/opt/morgnagplug/examples/check_wmi_plus.conf';
 
 # we are looking for the dir where utils.pm is located. This is normally installed as part of Nagios
 use lib "/usr/lib/nagios/plugins";
