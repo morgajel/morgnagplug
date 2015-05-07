@@ -32,7 +32,7 @@ REVISION=`echo '$PROGNAME: 2.3 $' | sed -e 's/[^0-9.]//g'`
 SNMPGET="/usr/bin/snmpget";
 SNMPWALK="/usr/bin/snmpwalk";
 
-. $PROGPATH/utils.sh
+. /usr/lib64/nagios/plugins/utils.sh
 
 USAGE="Usage: check_cisco_firewall.sh -H hostname -V version -M failover|sessions [-w|-c|-C|-l|-u|-a|-d|-h]
 ### PARAMETERS ### 
