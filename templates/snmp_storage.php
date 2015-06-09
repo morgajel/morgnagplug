@@ -26,8 +26,8 @@ foreach ($DS as $i) {
     if ($NAME[$i] != "_dev_shm"){
     
         $def[1] .= rrd::hrule( "100","#003300");
-        $def[1] .= rrd::hrule( "90","#FF0000");
-        $def[1] .= rrd::hrule( "85","#FFFF00");
+        $def[1] .= rrd::hrule( "95","#FF0000");
+        $def[1] .= rrd::hrule( "90","#FFFF00");
         
         $def[1] .= rrd::def("var$i",   $RRDFILE[1], $DS[$i]); 
         $def[1] .= rrd::cdef("used$i",  "var$i,$MAX[$i],/,100,*");
