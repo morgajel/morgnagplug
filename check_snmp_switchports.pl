@@ -316,7 +316,10 @@ foreach my $interface_id (keys %$returndata){
     my $discard=$interface_data->{'in discard'} + $interface_data->{'out discard'} ;
     my $error=$interface_data->{'in error'} + $interface_data->{'out error'} ;
 
-    my $perfstring=sprintf("'%s'=%dB,%dB,%dB,%dB;;;0;",$iname, $in, $out, $discard, $error  );
+    my $perfstring=sprintf("'%s in'=%dB;;;0;",$iname, $in );
+    $perfstring.=sprintf(" '%s out'=%dB;;;0;",$iname, $out );
+    $perfstring.=sprintf(" '%s discard'=%dB;;;0;",$iname, $discard );
+    $perfstring.=sprintf(" '%s error'=%dB;;;0;",$iname, $error );
     push @perfresults, $perfstring;
 }
 print "Switch responding OK. incoming, outgoing, discarded(in+out), error(in+out) | ".join(" ",@perfresults)."\n";
