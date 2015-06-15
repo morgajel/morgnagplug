@@ -319,7 +319,7 @@ foreach my $interface_id (keys %$returndata){
     my $perfstring=sprintf("'%s'=%dc,%dc,%dc,%dc;;;0;",$iname, $in, $out, $discard, $error  );
     push @perfresults, $perfstring;
 }
-print "Switch responding OK | ".join(" ",@perfresults)."\n";
+print "Switch responding OK. incoming, outgoing, discarded(in+out), error(in+out) | ".join(" ",@perfresults)."\n";
 
 exit 0;
 
