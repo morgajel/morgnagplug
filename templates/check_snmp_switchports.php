@@ -19,18 +19,34 @@ foreach ($NAME as $fieldname){
 
     if (preg_match('/_in$/', $fieldname)) {
         $interface_name = chop($fieldname, '_in');
+        $interface_name = str_replace("TenGigabitEthernet", "10GEth", $interface_name);
+        $interface_name = str_replace("GigabitEthernet", "GigEth", $interface_name);
+        $interface_name = str_replace("FastEthernet", "FastEth", $interface_name);
+        $interface_name = str_replace("Port-channel", "Port_Ch", $interface_name);
         $field='in';
     }
     elseif (preg_match('/_out$/', $fieldname)) {
         $interface_name = chop($fieldname, '_out');
+        $interface_name = str_replace("TenGigabitEthernet", "10GEth", $interface_name);
+        $interface_name = str_replace("GigabitEthernet", "GigEth", $interface_name);
+        $interface_name = str_replace("FastEthernet", "FastEth", $interface_name);
+        $interface_name = str_replace("Port-channel", "Port_Ch", $interface_name);
         $field='out';
     }
     elseif (preg_match('/_discard$/', $fieldname)) {
         $interface_name = chop($fieldname, '_discard');
+        $interface_name = str_replace("TenGigabitEthernet", "10GEth", $interface_name);
+        $interface_name = str_replace("GigabitEthernet", "GigEth", $interface_name);
+        $interface_name = str_replace("FastEthernet", "FastEth", $interface_name);
+        $interface_name = str_replace("Port-channel", "Port_Ch", $interface_name);
         $field='discard';
     }
     elseif (preg_match('/_error$/', $fieldname)) {
         $interface_name = chop($fieldname, '_error');
+        $interface_name = str_replace("TenGigabitEthernet", "10GEth", $interface_name);
+        $interface_name = str_replace("GigabitEthernet", "GigEth", $interface_name);
+        $interface_name = str_replace("FastEthernet", "FastEth", $interface_name);
+        $interface_name = str_replace("Port-channel", "Port_Ch", $interface_name);
         $field='error';
     }
     $interfaces[$interface_name][$field]= $DS[$counter];
@@ -42,22 +58,25 @@ foreach ($NAME as $fieldname){
 #########################################
 # Display overlayed Incoming Traffic
 #########################################
+srand(1);
 
 
 
 $opt[1] = "-l 0 --vertical-label \"Network Usage\"  --title \"Server $hostname Combined Incoming\"  ";
     
-$ds_name[1] = "Combined Incoming Interfaces" ;
+$ds_name[1] = "Combined Incoming Interfaces";
 $def[1]="";
 
 $counter=1;
+$colorcounter=1;
+ksort($interfaces);
 foreach ($interfaces as $interface_name =>$interface_data){
 
     $def[1] .= "DEF:varin".$counter."=$rrdfile:".$interface_data['in'].":AVERAGE " ;
-    $def[1] .= "LINE1:varin".$counter.$colors['in'].":\"".$interface_name." Incoming\" " ;
-    
-    
+    $def[1] .= "AREA:varin".$counter."". sprintf("#%06X",  $colorcounter/count($interfaces)*0xDDDDDD    )  .":".$interface_name.":STACK " ; 
+    $def[1] .= "PRINT:varin".$counter.":AVERAGE:\"%11.0lf Average\" ";
     $counter++;
+    $colorcounter++;
 }
 
 #########################################
@@ -72,13 +91,17 @@ $ds_name[2] = "Combined Outgoing Interfaces" ;
 $def[2]="";
 
 $counter=1;
+$colorcounter=1;
 foreach ($interfaces as $interface_name =>$interface_data){
 
     $def[2] .= "DEF:varin".$counter."=$rrdfile:".$interface_data['out'].":AVERAGE " ;
-    $def[2] .= "LINE1:varin".$counter.$colors['out'].":\"".$interface_name." Outgoing\" " ;
-    
+    #$def[2] .= "AREA:varin".$counter."". sprintf("#%06X", rand(0,0xffffff))  ."::STACK " ; 
+    $def[2] .= "AREA:varin".$counter."". sprintf("#%06X",  $colorcounter/count($interfaces)*0xDDDDDD    )  .":".$interface_name.":STACK " ; 
+    $def[2] .= "PRINT:varin".$counter.":AVERAGE:\"%11.0lf Average\" ";
+#    $def[1] .= "LINE1:varin".$counter.sprintf("#%06X", rand(0,0xffffff)).":STACK " ;
     
     $counter++;
+    $colorcounter++;
 }
 
 
@@ -88,37 +111,42 @@ foreach ($interfaces as $interface_name =>$interface_data){
 
 
 $counter=3;
+$colorcounter=1;
 
 foreach ($interfaces as $interface_name =>$interface_data){
 
     $opt[$counter] = "-l 0 --vertical-label \"Network Usage\"  --title \"Server $hostname interface $interface_name\"  ";
-    
+    $color=sprintf("#%06X",  $colorcounter/count($interfaces)*0xDDDDDD)    ; 
     $ds_name[$counter] = "interface $interface_name ".$interface_data['in'] ."| ".$interface_data['out']. "| ".$interface_data['discard']." | ".$interface_data['error'];
     $def[$counter]  = "DEF:varin".$counter."=$rrdfile:".$interface_data['in'].":AVERAGE " ;
-    $def[$counter] .= "LINE2:varin".$counter.$colors['in'].":\"Incoming\" " ;
-    $def[$counter] .= "GPRINT:varin".$counter.":AVERAGE:\"%10.0lf Average\" ";
-    $def[$counter] .= "GPRINT:varin".$counter.":MAX:\"%10.0lf Max\" ";
-    $def[$counter] .= "GPRINT:varin".$counter.":LAST:\"%10.0lf Last\\n\" ";
+    $def[$counter] .= "CDEF:nvarin".$counter."=varin".$counter.",1024,/,1024,/ " ;
+    $def[$counter] .= "AREA:varin".$counter.$color.":\"Incoming\" " ;
+    $def[$counter] .= "GPRINT:nvarin".$counter.":AVERAGE:\"%10.0lfMB Avg\" ";
+    $def[$counter] .= "GPRINT:nvarin".$counter.":MAX:\"%10.0lfMB Max\" ";
+    $def[$counter] .= "GPRINT:nvarin".$counter.":LAST:\"%10.0lfMB Last\\n\" ";
     
     $def[$counter] .= "DEF:varout".$counter."=$rrdfile:".$interface_data['out'].":AVERAGE " ;
-    $def[$counter] .= "LINE2:varout".$counter.$colors['out'].":\"outgoing\" " ;
-    $def[$counter] .= "GPRINT:varout".$counter.":AVERAGE:\"%10.0lf Average\" ";
-    $def[$counter] .= "GPRINT:varout".$counter.":MAX:\"%10.0lf Max\" ";
-    $def[$counter] .= "GPRINT:varout".$counter.":LAST:\"%10.0lf Last\\n\" ";
+    $def[$counter] .= "CDEF:nvarout".$counter."=varout".$counter.",-1,* " ;
+    $def[$counter] .= "CDEF:nvarrevout".$counter."=nvarout".$counter.",1024,/,1024,/ " ;
+    $def[$counter] .= "AREA:nvarout".$counter.$color.":\"outgoing\" " ;
+    $def[$counter] .= "GPRINT:nvarrevout".$counter.":AVERAGE:\"%10.0lfMB Avg\" ";
+    $def[$counter] .= "GPRINT:nvarrevout".$counter.":MAX:\"%10.0lfMB Max\" ";
+    $def[$counter] .= "GPRINT:nvarrevout".$counter.":LAST:\"%10.0lfMB Last\\n\" ";
     
     $def[$counter] .= "DEF:vardiscard".$counter."=$rrdfile:".$interface_data['discard'].":AVERAGE " ;
     $def[$counter] .= "LINE2:vardiscard".$counter.$colors['discard'].":\"discard\" " ;
-    $def[$counter] .= "GPRINT:vardiscard".$counter.":AVERAGE:\"%11.0lf Average\" ";
-    $def[$counter] .= "GPRINT:vardiscard".$counter.":MAX:\"%10.0lf Max\" ";
-    $def[$counter] .= "GPRINT:vardiscard".$counter.":LAST:\"%10.0lf Last\\n\" ";
+    $def[$counter] .= "GPRINT:vardiscard".$counter.":AVERAGE:\"%11.0lf Octets Avg\" ";
+    $def[$counter] .= "GPRINT:vardiscard".$counter.":MAX:\"%10.0lf Octets Max\" ";
+    $def[$counter] .= "GPRINT:vardiscard".$counter.":LAST:\"%10.0lf Octets Last\\n\" ";
     
     $def[$counter] .= "DEF:varerror".$counter."=$rrdfile:".$interface_data['error'].":AVERAGE " ;
     $def[$counter] .= "LINE2:varerror".$counter.$colors['error'].":\"error\" " ;
-    $def[$counter] .= "GPRINT:varerror".$counter.":AVERAGE:\"%13.0lf Average\" ";
-    $def[$counter] .= "GPRINT:varerror".$counter.":MAX:\"%10.0lf Max\" ";
-    $def[$counter] .= "GPRINT:varerror".$counter.":LAST:\"%10.0lf Last\\n\" ";
+    $def[$counter] .= "GPRINT:varerror".$counter.":AVERAGE:\"%13.0lf Octets avg\" ";
+    $def[$counter] .= "GPRINT:varerror".$counter.":MAX:\"%10.0lf Octets Max\" ";
+    $def[$counter] .= "GPRINT:varerror".$counter.":LAST:\"%10.0lf Octets Last\\n\" ";
     
     $counter++;
+    $colorcounter++;
 }
 
 
