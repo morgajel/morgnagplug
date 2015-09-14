@@ -405,7 +405,7 @@ try {
         $version = $row['VARIABLE_VALUE'];
     }
 
-    if (preg_match("/^5\.1\./", $version)) {
+    if (preg_match("/^5\.[15]\./", $version)) {
         $sql = "SELECT * FROM INFORMATION_SCHEMA.GLOBAL_STATUS";
         foreach ($dbh->query($sql) as $row) {
             $c[$row['VARIABLE_NAME']] = $row['VARIABLE_VALUE'];

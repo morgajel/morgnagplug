@@ -261,7 +261,7 @@ then
 	sum_value_Critical=$(( $sum_value_Critical + 1 ))
 fi
 
-comm_final="$comm_final - $Used_Sessions sessions (max : $Max_Used_Sessions) | Current_Used=$Used_Sessions"
+comm_final="$comm_final - $Used_Sessions sessions (max : $Max_Used_Sessions) | 'Current Used'=$Used_Sessions;$warning;$critical;1;$Max_Used_Sessions"
 }
 
 ############################################################
